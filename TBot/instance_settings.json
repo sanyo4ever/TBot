@@ -474,6 +474,7 @@
 		"MaxWaitTime": 7200,
 		"MinLootFuelRatio": 0.5,
 		"PreferedResource": "",
+		"ProcessAllReports": false,
 		"MaxSlots": 18,
 		"SlotsToLeaveFree": 1,
 		"CheckIntervalMin": 30,
@@ -483,8 +484,7 @@
 		"Blacklist": {
 			"Active": true,
 			"ResetAfterHours": 20,
-			"MinimumResourcesToNotBlacklist": 1000000,
-			"ProcessAllReports": true
+			"MinimumResourcesToNotBlacklist": 1000000
 		},
 		"StopAfterFullScan": true
 	},

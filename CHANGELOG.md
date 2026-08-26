@@ -1,5 +1,46 @@
 # Changelog
 
+## v3.5.0-beta6
+
+> **Beta warning:** This release contains further AutoFarm and Expeditions workflow changes. It is experimental and edge-case bugs may remain. If you need the known functional fallback, use **v3.4.9**.
+
+### Fixed
+
+#### AutoFarm
+
+- AutoFarm now reads espionage reports page by page until the first known AutoFarm boundary, instead of loading the complete mailbox or blindly restarting at page one.
+- Prevented report cleanup failures from causing the worker to repeatedly traverse the entire mailbox.
+- Kept report IDs protected in the AutoFarm state store when deletion fails, so the same report cannot be attacked twice.
+- Preserved reports outside the configured AutoFarm scope without treating them as AutoFarm reports.
+- Kept the scan checkpoint pending until the report phase has completed successfully.
+- Reopened stale `NotSuitable` targets only after the configured `KeepReportFor` cooldown, so cached resource values are never reused as a fresh attack decision.
+- Kept the long empty-system cooldown limited to genuinely empty systems or systems containing only vacation-mode planets.
+- Preserved AutoFarm slot ownership across espionage and attack fleets while excluding unrelated manual or mixed fleets.
+- Calculated the required cargo fleet from the actual sending Origin's lifeform cargo bonus instead of using the first planet in the account.
+- Revalidated the final cargo count and capacity after the Origin refresh, preventing a stale or partially available fleet from being sent with insufficient payload capacity.
+- Preferred moons only as a tie-break after distance, keeping the nearest valid farming Origin as the primary choice.
+
+#### Expeditions
+
+- Serialized fleet snapshot, origin selection and dispatch decisions through the FleetScheduler coordinator.
+- Selected Origins dynamically using current active expedition counts, per-Origin capacity and a bounded round-robin tie-breaker.
+- Made `RandomizeOrder` affect only equivalent tie-breaks; it can no longer make valid Origins disappear from a cycle.
+- Refreshed the selected Origin immediately before dispatch and skipped it only for the current execution when its ships are unavailable.
+- Revalidated slots, ships, payload and dispatch results immediately before sending, without blind retries after an ambiguous response.
+- Preserved local successful dispatches when a server fleet snapshot is temporarily behind.
+- Returned each fleet snapshot together with the freshness result that produced it, preventing concurrent workers from pairing a valid list with another refresh's status.
+
+#### OGamed v13 bridge
+
+- Added a page-scoped espionage report endpoint for AutoFarm.
+- Propagated HTTP status details in bridge errors instead of returning only a generic error message.
+- Kept message pagination ordered and bounded for callers that need the complete mailbox.
+- Restored the OGame v13 lifeform-bonus parser, including ship cargo bonuses used by fleet planning.
+
+### Added
+
+- Added regression coverage for fixed and randomized Origin order, thirteen-Origin round-robin distribution, unavailable Origins, stale snapshots, serialized dispatches, atomic snapshot freshness, per-Origin cargo bonuses, report deletion failures, report ordering and single-page report processing.
+
 ## v3.5.0-beta4
 
 > **Beta warning:** This release contains a substantial AutoHarvest rework and an Expeditions cache fix. It is still experimental and edge-case bugs may remain. If you need the known functional version, use **v3.4.9**.

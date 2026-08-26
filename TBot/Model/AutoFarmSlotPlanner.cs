@@ -18,9 +18,10 @@ namespace TBot.Model {
 			int totalFreeSlots,
 			int slotsToLeaveFree,
 			IEnumerable<Fleet> fleets,
-			Buildables cargoType) {
+			Buildables cargoType,
+			ISet<int> ownedEspionageFleetIds = null) {
 			var ownedSlots = (fleets ?? Enumerable.Empty<Fleet>())
-				.Count(fleet => IsOwnedFleet(fleet, cargoType));
+				.Count(fleet => IsOwnedFleet(fleet, cargoType, ownedEspionageFleetIds));
 
 			var availableByWorker = Math.Max(0, maxSlots - ownedSlots);
 			var availableGlobally = Math.Max(0, totalFreeSlots - slotsToLeaveFree);
@@ -32,11 +33,16 @@ namespace TBot.Model {
 		}
 
 		public static bool IsOwnedFleet(Fleet fleet, Buildables cargoType) {
+			return IsOwnedFleet(fleet, cargoType, null);
+		}
+
+		public static bool IsOwnedFleet(Fleet fleet, Buildables cargoType, ISet<int> ownedEspionageFleetIds) {
 			if (fleet?.Ships == null)
 				return false;
 
 			if (fleet.Mission == Missions.Spy)
-				return fleet.Ships.IsOnlyProbes();
+				return fleet.Ships.IsOnlyProbes() &&
+					(ownedEspionageFleetIds == null || ownedEspionageFleetIds.Contains(fleet.ID));
 
 			return fleet.Mission == Missions.Attack && IsOnlyShip(fleet.Ships, cargoType);
 		}

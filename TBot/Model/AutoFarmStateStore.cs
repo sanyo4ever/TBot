@@ -27,7 +27,7 @@ namespace TBot.Model {
 		public Resources Loot { get; init; } = new();
 	}
 
-	public sealed record AutoFarmScanCursor(int RangeIndex, int Galaxy, int System);
+	public sealed record AutoFarmScanCursor(int RangeIndex, int Galaxy, int System, bool ReportPhasePending = false);
 
 	/// <summary>
 	/// Durable AutoFarm state. System snapshots and target decisions survive a
@@ -140,13 +140,16 @@ ON CONFLICT(galaxy, system) DO UPDATE SET
 				using var command = connection.CreateCommand();
 				command.CommandText = @"
 INSERT INTO targets (
-  galaxy, system, position, celestial_type, name, state, report_json, consumed_report_id, updated_at_utc)
-VALUES ($galaxy, $system, $position, $celestial_type, $name, $state, $report_json, $consumed_report_id, $updated_at_utc)
+  galaxy, system, position, celestial_type, name, state, report_json, consumed_report_id, probe_fleet_id, probe_level, probe_sent_at_utc, updated_at_utc)
+VALUES ($galaxy, $system, $position, $celestial_type, $name, $state, $report_json, $consumed_report_id, $probe_fleet_id, $probe_level, $probe_sent_at_utc, $updated_at_utc)
 ON CONFLICT(galaxy, system, position, celestial_type) DO UPDATE SET
   name = excluded.name,
   state = excluded.state,
   report_json = excluded.report_json,
   consumed_report_id = excluded.consumed_report_id,
+  probe_fleet_id = excluded.probe_fleet_id,
+  probe_level = excluded.probe_level,
+  probe_sent_at_utc = excluded.probe_sent_at_utc,
   updated_at_utc = excluded.updated_at_utc;";
 				command.Parameters.AddWithValue("$galaxy", coordinate.Galaxy);
 				command.Parameters.AddWithValue("$system", coordinate.System);
@@ -159,6 +162,13 @@ ON CONFLICT(galaxy, system, position, celestial_type) DO UPDATE SET
 					: JsonConvert.SerializeObject(target.Report));
 				command.Parameters.AddWithValue("$consumed_report_id", target.ConsumedReportId.HasValue
 					? target.ConsumedReportId.Value
+					: DBNull.Value);
+				command.Parameters.AddWithValue("$probe_fleet_id", target.ProbeFleetId.HasValue
+					? target.ProbeFleetId.Value
+					: DBNull.Value);
+				command.Parameters.AddWithValue("$probe_level", Math.Max(0, target.ProbeLevel));
+				command.Parameters.AddWithValue("$probe_sent_at_utc", target.ProbeSentAtUtc.HasValue
+					? FormatUtc(target.ProbeSentAtUtc.Value)
 					: DBNull.Value);
 				command.Parameters.AddWithValue("$updated_at_utc", FormatUtc(updatedAtUtc));
 				command.ExecuteNonQuery();
@@ -176,7 +186,7 @@ ON CONFLICT(galaxy, system, position, celestial_type) DO UPDATE SET
 				using var connection = OpenConnection();
 				using var command = connection.CreateCommand();
 				command.CommandText = @"
-SELECT galaxy, system, position, celestial_type, name, state, report_json, consumed_report_id
+SELECT galaxy, system, position, celestial_type, name, state, report_json, consumed_report_id, probe_fleet_id, probe_level, probe_sent_at_utc
 FROM targets;";
 
 				using var reader = command.ExecuteReader();
@@ -193,8 +203,11 @@ FROM targets;";
 					var report = reader.IsDBNull(6)
 						? null
 						: JsonConvert.DeserializeObject<EspionageReport>(reader.GetString(6));
-					targets.Add(new FarmTarget(celestial, (FarmState) reader.GetInt32(5), report) {
-						ConsumedReportId = reader.IsDBNull(7) ? null : reader.GetInt32(7)
+						targets.Add(new FarmTarget(celestial, (FarmState) reader.GetInt32(5), report) {
+						ConsumedReportId = reader.IsDBNull(7) ? null : reader.GetInt32(7),
+						ProbeFleetId = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+						ProbeLevel = reader.IsDBNull(9) ? 0 : Math.Max(0, reader.GetInt32(9)),
+						ProbeSentAtUtc = reader.IsDBNull(10) ? null : ParseUtc(reader.GetString(10))
 					});
 				}
 			} catch {
@@ -216,6 +229,90 @@ FROM targets;";
 				return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
 			} catch {
 				return false;
+			}
+		}
+
+		public bool HasProcessedReport(int reportId) {
+			if (!_enabled || reportId <= 0)
+				return false;
+
+			try {
+				using var connection = OpenConnection();
+				using var command = connection.CreateCommand();
+				command.CommandText = @"
+SELECT EXISTS(
+  SELECT 1 FROM processed_reports WHERE report_id = $report_id
+  UNION ALL
+  SELECT 1 FROM processed_report_ids WHERE report_id = $report_id
+);";
+				command.Parameters.AddWithValue("$report_id", reportId);
+				return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
+			} catch {
+				return false;
+			}
+		}
+
+		public string GetProcessedReportOutcome(int reportId) {
+			if (!_enabled || reportId <= 0)
+				return null;
+
+			try {
+				using var connection = OpenConnection();
+				using var command = connection.CreateCommand();
+				command.CommandText = @"
+SELECT outcome
+FROM (
+  SELECT outcome, processed_at_utc FROM processed_reports WHERE report_id = $report_id
+  UNION ALL
+  SELECT outcome, processed_at_utc FROM processed_report_ids WHERE report_id = $report_id
+)
+ORDER BY processed_at_utc DESC
+LIMIT 1;";
+				command.Parameters.AddWithValue("$report_id", reportId);
+				return command.ExecuteScalar() as string;
+			} catch {
+				return null;
+			}
+		}
+
+		public void RecordProcessedReport(int reportId, Coordinate coordinate, string outcome, DateTime processedAtUtc) {
+			if (!_enabled || reportId <= 0)
+				return;
+
+			try {
+				using var connection = OpenConnection();
+				using var command = connection.CreateCommand();
+				if (coordinate == null) {
+					command.CommandText = @"
+INSERT INTO processed_report_ids (report_id, outcome, processed_at_utc)
+VALUES ($report_id, $outcome, $processed_at_utc)
+ON CONFLICT(report_id) DO UPDATE SET
+  outcome = excluded.outcome,
+  processed_at_utc = excluded.processed_at_utc;";
+					command.Parameters.AddWithValue("$report_id", reportId);
+					command.Parameters.AddWithValue("$outcome", outcome ?? string.Empty);
+					command.Parameters.AddWithValue("$processed_at_utc", FormatUtc(processedAtUtc));
+					command.ExecuteNonQuery();
+					return;
+				}
+
+				command.CommandText = @"
+INSERT INTO processed_reports (
+  report_id, galaxy, system, position, celestial_type, outcome, processed_at_utc)
+VALUES ($report_id, $galaxy, $system, $position, $celestial_type, $outcome, $processed_at_utc)
+ON CONFLICT(report_id) DO UPDATE SET
+  outcome = excluded.outcome,
+  processed_at_utc = excluded.processed_at_utc;";
+				command.Parameters.AddWithValue("$report_id", reportId);
+				command.Parameters.AddWithValue("$galaxy", coordinate.Galaxy);
+				command.Parameters.AddWithValue("$system", coordinate.System);
+				command.Parameters.AddWithValue("$position", coordinate.Position);
+				command.Parameters.AddWithValue("$celestial_type", (int) coordinate.Type);
+				command.Parameters.AddWithValue("$outcome", outcome ?? string.Empty);
+				command.Parameters.AddWithValue("$processed_at_utc", FormatUtc(processedAtUtc));
+				command.ExecuteNonQuery();
+			} catch {
+				// Persistence must never stop AutoFarm.
 			}
 		}
 
@@ -327,7 +424,7 @@ LIMIT $limit;";
 				using var connection = OpenConnection();
 				using var command = connection.CreateCommand();
 				command.CommandText = @"
-SELECT range_index, galaxy, system
+SELECT range_index, galaxy, system, report_phase_pending
 FROM scan_cursor
 WHERE id = 1;";
 
@@ -335,13 +432,17 @@ WHERE id = 1;";
 				if (!reader.Read())
 					return null;
 
-				return new AutoFarmScanCursor(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2));
+				return new AutoFarmScanCursor(
+					reader.GetInt32(0),
+					reader.GetInt32(1),
+					reader.GetInt32(2),
+					!reader.IsDBNull(3) && reader.GetInt64(3) != 0);
 			} catch {
 				return null;
 			}
 		}
 
-		public void SaveScanCursor(int rangeIndex, int galaxy, int system, DateTime updatedAtUtc) {
+		public void SaveScanCursor(int rangeIndex, int galaxy, int system, DateTime updatedAtUtc, bool reportPhasePending = false) {
 			if (!_enabled)
 				return;
 
@@ -349,16 +450,18 @@ WHERE id = 1;";
 				using var connection = OpenConnection();
 				using var command = connection.CreateCommand();
 				command.CommandText = @"
-INSERT INTO scan_cursor (id, range_index, galaxy, system, updated_at_utc)
-VALUES (1, $range_index, $galaxy, $system, $updated_at_utc)
+INSERT INTO scan_cursor (id, range_index, galaxy, system, report_phase_pending, updated_at_utc)
+VALUES (1, $range_index, $galaxy, $system, $report_phase_pending, $updated_at_utc)
 ON CONFLICT(id) DO UPDATE SET
   range_index = excluded.range_index,
   galaxy = excluded.galaxy,
   system = excluded.system,
+  report_phase_pending = excluded.report_phase_pending,
   updated_at_utc = excluded.updated_at_utc;";
 				command.Parameters.AddWithValue("$range_index", rangeIndex);
 				command.Parameters.AddWithValue("$galaxy", galaxy);
 				command.Parameters.AddWithValue("$system", system);
+				command.Parameters.AddWithValue("$report_phase_pending", reportPhasePending ? 1 : 0);
 				command.Parameters.AddWithValue("$updated_at_utc", FormatUtc(updatedAtUtc));
 				command.ExecuteNonQuery();
 			} catch {
@@ -391,8 +494,8 @@ ON CONFLICT(id) DO UPDATE SET
 					var coordinate = target.Celestial.Coordinate;
 					insert.CommandText = @"
 INSERT INTO targets (
-  galaxy, system, position, celestial_type, name, state, report_json, consumed_report_id, updated_at_utc)
-VALUES ($galaxy, $system, $position, $celestial_type, $name, $state, $report_json, $consumed_report_id, $updated_at_utc);";
+  galaxy, system, position, celestial_type, name, state, report_json, consumed_report_id, probe_fleet_id, probe_level, probe_sent_at_utc, updated_at_utc)
+VALUES ($galaxy, $system, $position, $celestial_type, $name, $state, $report_json, $consumed_report_id, $probe_fleet_id, $probe_level, $probe_sent_at_utc, $updated_at_utc);";
 					insert.Parameters.AddWithValue("$galaxy", coordinate.Galaxy);
 					insert.Parameters.AddWithValue("$system", coordinate.System);
 					insert.Parameters.AddWithValue("$position", coordinate.Position);
@@ -404,6 +507,13 @@ VALUES ($galaxy, $system, $position, $celestial_type, $name, $state, $report_jso
 						: JsonConvert.SerializeObject(target.Report));
 					insert.Parameters.AddWithValue("$consumed_report_id", target.ConsumedReportId.HasValue
 						? target.ConsumedReportId.Value
+						: DBNull.Value);
+					insert.Parameters.AddWithValue("$probe_fleet_id", target.ProbeFleetId.HasValue
+						? target.ProbeFleetId.Value
+						: DBNull.Value);
+					insert.Parameters.AddWithValue("$probe_level", Math.Max(0, target.ProbeLevel));
+					insert.Parameters.AddWithValue("$probe_sent_at_utc", target.ProbeSentAtUtc.HasValue
+						? FormatUtc(target.ProbeSentAtUtc.Value)
 						: DBNull.Value);
 					insert.Parameters.AddWithValue("$updated_at_utc", FormatUtc(updatedAtUtc));
 					insert.ExecuteNonQuery();
@@ -437,6 +547,9 @@ CREATE TABLE IF NOT EXISTS targets (
   state INTEGER NOT NULL,
   report_json TEXT NULL,
   consumed_report_id INTEGER NULL,
+  probe_fleet_id INTEGER NULL,
+  probe_level INTEGER NOT NULL DEFAULT 0,
+  probe_sent_at_utc TEXT NULL,
   updated_at_utc TEXT NOT NULL,
   PRIMARY KEY (galaxy, system, position, celestial_type)
 );
@@ -447,6 +560,20 @@ CREATE TABLE IF NOT EXISTS consumed_reports (
   position INTEGER NOT NULL,
   celestial_type INTEGER NOT NULL,
   consumed_at_utc TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS processed_reports (
+  report_id INTEGER NOT NULL PRIMARY KEY,
+  galaxy INTEGER NOT NULL,
+  system INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  celestial_type INTEGER NOT NULL,
+  outcome TEXT NOT NULL,
+  processed_at_utc TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS processed_report_ids (
+  report_id INTEGER NOT NULL PRIMARY KEY,
+  outcome TEXT NOT NULL,
+  processed_at_utc TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS attacks (
   report_id INTEGER NOT NULL PRIMARY KEY,
@@ -470,6 +597,7 @@ CREATE TABLE IF NOT EXISTS scan_cursor (
   range_index INTEGER NOT NULL,
   galaxy INTEGER NOT NULL,
   system INTEGER NOT NULL,
+  report_phase_pending INTEGER NOT NULL DEFAULT 0,
   updated_at_utc TEXT NOT NULL
 );";
 				command.ExecuteNonQuery();
@@ -480,6 +608,28 @@ CREATE TABLE IF NOT EXISTS scan_cursor (
 					migration.ExecuteNonQuery();
 				} catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) {
 					// Existing AutoFarm databases already have the new column.
+				}
+
+				foreach (var column in new[] {
+					"probe_fleet_id INTEGER NULL",
+					"probe_level INTEGER NOT NULL DEFAULT 0",
+					"probe_sent_at_utc TEXT NULL"
+				}) {
+					try {
+						using var migration = connection.CreateCommand();
+						migration.CommandText = $"ALTER TABLE targets ADD COLUMN {column};";
+						migration.ExecuteNonQuery();
+					} catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) {
+						// Existing AutoFarm databases already have this column.
+					}
+				}
+
+				try {
+					using var migration = connection.CreateCommand();
+					migration.CommandText = "ALTER TABLE scan_cursor ADD COLUMN report_phase_pending INTEGER NOT NULL DEFAULT 0;";
+					migration.ExecuteNonQuery();
+				} catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) {
+					// Existing AutoFarm databases already have this column.
 				}
 
 				foreach (var column in new[] {

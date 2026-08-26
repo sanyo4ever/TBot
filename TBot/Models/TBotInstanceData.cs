@@ -30,7 +30,10 @@ namespace Tbot.Models {
 
 		public async Task Deinitialize() {
 			await _botMain.DisposeAsync();
-			ServiceScope.Dispose();
+			if (ServiceScope is IAsyncDisposable asyncScope)
+				await asyncScope.DisposeAsync();
+			else
+				ServiceScope.Dispose();
 		}
 	}
 }

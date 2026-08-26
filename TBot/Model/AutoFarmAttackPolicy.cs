@@ -35,7 +35,7 @@ namespace TBot.Model {
 			return CanUseReport(target, report);
 		}
 
-		public static bool IsRepeatedNonActionableReport(FarmTarget target, EspionageReport report) {
+		public static bool IsPreviouslyStoredReport(FarmTarget target, EspionageReport report) {
 			if (target == null || report == null)
 				return false;
 
@@ -43,9 +43,10 @@ namespace TBot.Model {
 			if (previousReport == null || previousReport.ID <= 0 || report.ID <= 0 || previousReport.ID != report.ID)
 				return false;
 
-			return target.State == FarmState.NotSuitable
-				|| target.State == FarmState.ProbesRequired
-				|| target.State == FarmState.FailedProbesRequired;
+			// The previous report is retained as a duplicate guard even after the
+			// target is reopened for a new probe. A failed delete must not make the
+			// old report look like the result of that new probe.
+			return true;
 		}
 	}
 }

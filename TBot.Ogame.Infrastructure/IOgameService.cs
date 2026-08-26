@@ -38,6 +38,7 @@ namespace TBot.Ogame.Infrastructure {
 		Task<EspionageReport> GetEspionageReport(Coordinate coordinate);
 		Task<EspionageReport> GetEspionageReport(int msgId);
 		Task<List<EspionageReportSummary>> GetEspionageReports();
+		Task<List<EspionageReportSummary>> GetEspionageReportsPage(int page);
 		Task<Facilities> GetFacilities(Celestial celestial);
 		Task<List<Fleet>> GetFleets();
 		Task<GalaxyInfo> GetGalaxyInfo(Coordinate coordinate);

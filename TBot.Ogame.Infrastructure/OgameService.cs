@@ -251,7 +251,8 @@ namespace TBot.Ogame.Infrastructure {
 			}
 			if (result != null) {
 				if (result.Status == null) {
-					throw new OgamedException("An error has occurred");
+					throw new OgamedException(
+						$"An error has occurred (HTTP {(int) response.StatusCode} {response.ReasonPhrase})");
 				}
 				else if (result.Status != "ok") {
 					throw new OgamedException($"An error has occurred: Status Code: {response.StatusCode} Status: {result?.Status} - Message: {result?.Message}");
@@ -989,6 +990,11 @@ namespace TBot.Ogame.Infrastructure {
 
 		public async Task<List<EspionageReportSummary>> GetEspionageReports() {
 			return await GetAsync<List<EspionageReportSummary>>("/bot/espionage-report");
+		}
+
+		public async Task<List<EspionageReportSummary>> GetEspionageReportsPage(int page) {
+			page = Math.Max(1, page);
+			return await GetAsync<List<EspionageReportSummary>>($"/bot/espionage-report?page={page}");
 		}
 
 		public async Task<EspionageReport> GetEspionageReport(Coordinate coordinate) {

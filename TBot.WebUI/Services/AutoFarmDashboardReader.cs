@@ -69,8 +69,7 @@ namespace TBot.WebUI.Services {
 			command.CommandText = @"
 SELECT galaxy, system, observed_at_utc, is_empty, " + (hasPlanetsJson ? "planets_json" : "NULL") + @"
 FROM systems
-ORDER BY observed_at_utc DESC
-LIMIT 1000;";
+ORDER BY observed_at_utc DESC;";
 
 			using var reader = command.ExecuteReader();
 			while (reader.Read()) {
