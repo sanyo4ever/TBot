@@ -171,6 +171,110 @@ namespace TBot.Tests {
 		}
 
 		[Fact]
+		public async Task AutoFarmKeepsDefenceReportsAndProcessesFollowingReportsOnlyOnce() {
+			var alias = $"report-processing-defense-retention-{Guid.NewGuid():N}";
+			var dataFolder = Path.Combine(AppContext.BaseDirectory, "data");
+			var databasePath = Path.Combine(dataFolder, $"autofarm_{alias}.db");
+			var defenseCoordinate = new Coordinate(2, 275, 20, Celestials.Planet);
+			var defencelessCoordinate = new Coordinate(2, 275, 21, Celestials.Planet);
+			var defenseReport = new EspionageReport {
+				ID = 991001,
+				Coordinate = defenseCoordinate,
+				Date = DateTime.UtcNow,
+				IsInactive = true,
+				Metal = 1000000,
+				HasFleetInformation = true,
+				HasDefensesInformation = true,
+				RocketLauncher = 1
+			};
+			var defencelessReport = new EspionageReport {
+				ID = 991002,
+				Coordinate = defencelessCoordinate,
+				Date = DateTime.UtcNow,
+				IsInactive = true,
+				Metal = 1000000,
+				HasFleetInformation = true,
+				HasDefensesInformation = true
+			};
+			var reports = new Dictionary<int, EspionageReport> {
+				[defenseReport.ID] = defenseReport,
+				[defencelessReport.ID] = defencelessReport
+			};
+			var summaries = new List<EspionageReportSummary> {
+				new EspionageReportSummary { ID = defenseReport.ID, Type = EspionageReportType.Report, Target = defenseCoordinate },
+				new EspionageReportSummary { ID = defencelessReport.ID, Type = EspionageReportType.Report, Target = defencelessCoordinate }
+			};
+			var deletedReports = new List<int>();
+			var readReports = new List<int>();
+			var reportPagePass = 0;
+			var userData = CreateUserData();
+			userData.farmTargets.Add(new FarmTarget(
+				new Planet { Name = "Defended target", Inactive = true, Coordinate = defenseCoordinate },
+				FarmState.ProbesSent) {
+				ProbeFleetId = 991101,
+				ProbeSentAtUtc = DateTime.UtcNow
+			});
+			userData.farmTargets.Add(new FarmTarget(
+				new Planet { Name = "Defenceless target", Inactive = true, Coordinate = defencelessCoordinate },
+				FarmState.ProbesSent) {
+				ProbeFleetId = 991102,
+				ProbeSentAtUtc = DateTime.UtcNow
+			});
+			var settings = SettingsService.GetMergedSettingsFromContents(
+				"{\"AutoFarm\":{\"Active\":true,\"KeepReportsWithDefense\":true,\"ProcessAllReports\":false,\"KeepReportFor\":0,\"MinimumResources\":0,\"PreferedResource\":\"\",\"CargoType\":\"LargeCargo\",\"Blacklist\":{\"Active\":false}}}",
+				new List<string> { "{}" });
+			var parent = CreateParent(alias, settings, userData);
+			var ogame = Proxy<IOgameService>.Create((method, args) => {
+				if (method.Name == nameof(IOgameService.GetEspionageReportsPage)) {
+					var page = (int)args[0];
+					if (page == 1) {
+						reportPagePass++;
+						return Task.FromResult(reportPagePass == 1
+							? summaries
+							: new List<EspionageReportSummary> {
+								new EspionageReportSummary { ID = defenseReport.ID, Type = EspionageReportType.Report, Target = defenseCoordinate }
+							});
+					}
+					return Task.FromResult(new List<EspionageReportSummary>());
+				}
+				if (method.Name == nameof(IOgameService.GetEspionageReport)) {
+					var reportId = (int)args[0];
+					readReports.Add(reportId);
+					return Task.FromResult(reports[reportId]);
+				}
+				if (method.Name == nameof(IOgameService.DeleteReport)) {
+					deletedReports.Add((int)args[0]);
+					return Task.CompletedTask;
+				}
+				return Proxy<IOgameService>.Default(method.ReturnType);
+			});
+
+			try {
+				var worker = new AutoFarmWorker(parent, ogame, CreateScheduler(), CreateCalculation(), CreateBridge());
+				var processReports = typeof(AutoFarmWorker).GetMethod(
+					"AutoFarmProcessReports",
+					BindingFlags.Instance | BindingFlags.NonPublic);
+				Assert.NotNull(processReports);
+
+				var firstPass = (Task<bool>)processReports.Invoke(worker, null);
+				Assert.True(await firstPass);
+				var secondPass = (Task<bool>)processReports.Invoke(worker, null);
+				Assert.True(await secondPass);
+
+				Assert.Equal(new[] { defenseReport.ID, defencelessReport.ID }, readReports);
+				Assert.DoesNotContain(defenseReport.ID, deletedReports);
+				Assert.Contains(defencelessReport.ID, deletedReports);
+				Assert.Equal(FarmState.NotSuitable, userData.farmTargets.Single(target => target.HasCoords(defenseCoordinate)).State);
+				Assert.Equal(FarmState.AttackPending, userData.farmTargets.Single(target => target.HasCoords(defencelessCoordinate)).State);
+				using var store = new AutoFarmStateStore($"autofarm_{alias}.db", dataFolder);
+				Assert.Equal(AutoFarmReportPolicy.ManualReviewDefenseOutcome, store.GetProcessedReportOutcome(defenseReport.ID));
+			} finally {
+				if (File.Exists(databasePath))
+					File.Delete(databasePath);
+			}
+		}
+
+		[Fact]
 		public async Task AutoFarmKeepsTheCursorWhenARealSystemScanFails() {
 			var alias = $"scan-failure-{Guid.NewGuid():N}";
 			var dataFolder = Path.Combine(AppContext.BaseDirectory, "data");

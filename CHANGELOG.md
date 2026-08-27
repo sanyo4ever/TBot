@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.5.0-beta7
+
+> **Beta warning:** This release adds a change to AutoFarm report handling. It is still experimental; use **v3.4.9** if you need the known functional fallback.
+
+### Fixed
+
+#### AutoFarm
+
+- AutoFarm no longer deletes espionage reports that contain known planetary defenses, so they remain available for manual attacks.
+- Kept reports with defenses are recorded as `ManualReviewDefense` and skipped on later cycles instead of being repeatedly processed.
+- Reports with no actual defensive structures, fleet-only reports, and reports without defense information keep their normal AutoFarm behavior.
+
+### Added
+
+- Added `AutoFarm.KeepReportsWithDefense`, enabled by default. Set it to `false` to restore automatic deletion of defense reports.
+- Added an explicit dashboard reason, `Manual review: defense detected`, for reports kept for manual handling.
+
+Build version: **3.5.0.7**
+Release channel: **Beta**
+
 ## v3.5.0-beta6
 
 > **Beta warning:** This release contains further AutoFarm and Expeditions workflow changes. It is experimental and edge-case bugs may remain. If you need the known functional fallback, use **v3.4.9**.

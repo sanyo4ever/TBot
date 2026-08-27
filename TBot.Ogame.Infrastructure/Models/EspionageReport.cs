@@ -129,6 +129,22 @@ namespace TBot.Ogame.Infrastructure.Models {
 			return false;
 		}
 
+		/// <summary>
+		/// Returns whether the report contains at least one actual defensive
+		/// structure. This deliberately excludes ships: AutoFarm may reject a
+		/// target because of fleet ships, but the manual-review retention option
+		/// is specifically about keeping reports with planetary defences.
+		/// </summary>
+		public bool HasDefensiveStructures() {
+			if (!HasDefensesInformation)
+				return false;
+
+			return HasShipOrDefence(
+				RocketLauncher, LightLaser, HeavyLaser, GaussCannon, IonCannon,
+				PlasmaTurret, SmallShieldDome, LargeShieldDome,
+				AntiBallisticMissiles, InterplanetaryMissiles);
+		}
+
 		private static bool HasShipOrDefence(params long?[] amounts) {
 			return amounts.Any(amount => amount.GetValueOrDefault() > 0);
 		}

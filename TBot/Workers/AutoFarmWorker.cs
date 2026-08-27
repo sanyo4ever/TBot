@@ -143,6 +143,44 @@ namespace Tbot.Workers {
 				(bool) _tbotInstance.InstanceSettings.AutoFarm.ProcessAllReports;
 		}
 
+		private bool KeepReportsWithDefenseEnabled() {
+			// Default to enabled so existing instance files receive the safer
+			// behaviour without requiring a migration. The setting can still be
+			// explicitly disabled for users who want the previous cleanup policy.
+			return !SettingsService.IsSettingSet(_tbotInstance.InstanceSettings.AutoFarm, "KeepReportsWithDefense") ||
+				(bool) _tbotInstance.InstanceSettings.AutoFarm.KeepReportsWithDefense;
+		}
+
+		private bool IsManualReviewDefenseReport(int reportId) {
+			if (!KeepReportsWithDefenseEnabled() || reportId <= 0)
+				return false;
+
+			if (AutoFarmReportPolicy.IsManualReviewDefense(_stateStore.GetProcessedReportOutcome(reportId)))
+				return true;
+
+			return (_tbotInstance.UserData.farmTargets ?? new List<FarmTarget>())
+				.Any(target => target?.Report?.ID == reportId &&
+					AutoFarmReportPolicy.ShouldPreserveForManualReview(target.Report, true));
+		}
+
+		private void PreserveReportForManualReview(EspionageReport report, bool processAllReports) {
+			var target = (_tbotInstance.UserData.farmTargets ?? new List<FarmTarget>())
+				.FirstOrDefault(candidate => candidate?.HasCoords(report.Coordinate) == true);
+			if (target != null && AutoFarmReportPolicy.IsOwnedByAutoFarm(target, report, processAllReports) &&
+				target.State != FarmState.AttackSent) {
+				target.Report = report;
+				target.State = FarmState.NotSuitable;
+				target.ProbeFleetId = null;
+				target.ProbeSentAtUtc = null;
+				target.ProbeLevel = 0;
+				PersistTargets();
+			}
+
+			RecordProcessedReport(report, AutoFarmReportPolicy.ManualReviewDefenseOutcome);
+			_tbotInstance.log(LogLevel.Information, LogSender.AutoFarm,
+				$"Keeping espionage report {report.ID} for {report.Coordinate}: planetary defenses detected; manual review required.");
+		}
+
 		private async Task PruneOldReports(List<Fleet> fleets) {
 			var newTimeUtc = await GetServerTimeUtc();
 			var reportCooldown = GetReportCooldown();
@@ -1606,6 +1644,7 @@ namespace Tbot.Workers {
 					addedNewReport = true;
 					summaries.Add(summary);
 					if (IsKnownAutoFarmReport(summary.ID)
+						&& !IsManualReviewDefenseReport(summary.ID)
 						&& !IsPreservedOutsideConfiguredRange(summary.ID, processAllReports)
 						&& !(processAllReports && IsMarkedAsNotScanned(summary.ID))) {
 						reachedKnownBoundary = true;
@@ -1668,6 +1707,12 @@ namespace Tbot.Workers {
 				.GroupBy(report => report.ID)
 				.Select(group => group.First())) {
 				try {
+					if (IsManualReviewDefenseReport(summary.ID)) {
+						_tbotInstance.log(LogLevel.Debug, LogSender.AutoFarm,
+							$"Skipping preserved espionage report {summary.ID}: planetary defenses are reserved for manual review.");
+						continue;
+					}
+
 					if (IsPreservedOutsideConfiguredRange(summary.ID, processAllReports)) {
 						_tbotInstance.log(LogLevel.Debug, LogSender.AutoFarm,
 							$"Encountered preserved espionage report {summary.ID}; it is outside the configured AutoFarm range. " +
@@ -1703,6 +1748,17 @@ namespace Tbot.Workers {
 						allReportsProcessed = AutoFarmReportPolicy.CombineProcessingResult(allReportsProcessed, malformedDeleted);
 						if (AutoFarmReportPolicy.ShouldStopAfterDeletionFailure(malformedDeleted))
 							break;
+						continue;
+					}
+
+					if (AutoFarmReportPolicy.ShouldPreserveForManualReview(report, KeepReportsWithDefenseEnabled())) {
+						PreserveReportForManualReview(report, processAllReports);
+						continue;
+					}
+
+					if (IsManualReviewDefenseReport(report.ID)) {
+						_tbotInstance.log(LogLevel.Debug, LogSender.AutoFarm,
+							$"Skipping preserved espionage report {report.ID}: planetary defenses are reserved for manual review.");
 						continue;
 					}
 					if (IsKnownAutoFarmReport(report.ID) &&

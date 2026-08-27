@@ -451,6 +451,7 @@
 			}
 		],
 		"KeepReportFor": 1440,
+		"KeepReportsWithDefense": true,
 		"NumProbes": 52,
 		"Origin": [
 			{

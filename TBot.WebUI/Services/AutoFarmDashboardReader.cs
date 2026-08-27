@@ -15,6 +15,7 @@ using TBot.WebUI.Models;
 
 namespace TBot.WebUI.Services {
 	public sealed class AutoFarmDashboardReader {
+		private const string ManualReviewDefenseOutcome = "ManualReviewDefense";
 		private static readonly Regex SlotBudget = new(@"AutoFarm will use (?<available>\d+) slots \((?<used>\d+)/(?<max>\d+) already used\)", RegexOptions.Compiled);
 		private static readonly Regex ExhaustedBudget = new(@"AutoFarm slot budget exhausted \((?<used>\d+)/(?<max>\d+)\)", RegexOptions.Compiled);
 		private static readonly Regex CoordinatePattern = new(@"\[(?<type>[A-Za-z]+):(?<galaxy>\d+):(?<system>\d+):(?<position>\d+)\]", RegexOptions.Compiled);
@@ -122,6 +123,7 @@ ORDER BY observed_at_utc DESC;";
 			var blacklist = ReadBlacklist(instanceAlias);
 			var logReasons = BuildTargetReasons(logs);
 			var consumedReportIds = ReadConsumedReportIds(connection);
+			var processedReportOutcomes = ReadProcessedReportOutcomes(connection);
 			using var command = connection.CreateCommand();
 			var hasConsumedReportColumn = HasColumn(connection, "targets", "consumed_report_id");
 			command.CommandText = @"
@@ -144,7 +146,7 @@ ORDER BY updated_at_utc DESC;";
 				var state = GetStateName(reader.GetInt32(1));
 				var reportId = report.Value<int?>("ID") ?? 0;
 				var consumedReportId = reader.IsDBNull(7) ? (int?)null : reader.GetInt32(7);
-				var reason = ResolveTargetReason(state, coordinate, reportId, consumedReportId, consumedReportIds, blacklist, logReasons);
+				var reason = ResolveTargetReason(state, coordinate, reportId, consumedReportId, consumedReportIds, processedReportOutcomes, blacklist, logReasons);
 
 				storage.Reports.Add(new AutoFarmReportRow {
 					TargetName = reader.GetString(0),
@@ -173,6 +175,33 @@ ORDER BY updated_at_utc DESC;";
 			using var reader = command.ExecuteReader();
 			while (reader.Read())
 				result.Add(reader.GetInt32(0));
+			return result;
+		}
+
+		private static Dictionary<int, string> ReadProcessedReportOutcomes(SqliteConnection connection) {
+			var result = new Dictionary<int, string>();
+			var queries = new[] {
+				"SELECT report_id, outcome, processed_at_utc FROM processed_reports;",
+				"SELECT report_id, outcome, processed_at_utc FROM processed_report_ids;"
+			};
+
+			foreach (var query in queries) {
+				try {
+					using var command = connection.CreateCommand();
+					command.CommandText = query;
+					using var reader = command.ExecuteReader();
+					while (reader.Read()) {
+						var reportId = reader.GetInt32(0);
+						if (reportId <= 0 || result.ContainsKey(reportId))
+							continue;
+
+						result[reportId] = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+					}
+				} catch {
+					// Older AutoFarm databases may not contain both report tables.
+				}
+			}
+
 			return result;
 		}
 
@@ -381,11 +410,14 @@ WHERE id = 1;";
 			return reasons;
 		}
 
-		private static (string Label, string Detail) ResolveTargetReason(string state, string coordinate, int reportId, int? consumedReportId, ISet<int> consumedReportIds, Dictionary<string, BlacklistEntry> blacklist, Dictionary<string, string> logReasons) {
+		private static (string Label, string Detail) ResolveTargetReason(string state, string coordinate, int reportId, int? consumedReportId, ISet<int> consumedReportIds, IReadOnlyDictionary<int, string> processedReportOutcomes, Dictionary<string, BlacklistEntry> blacklist, Dictionary<string, string> logReasons) {
 			if (logReasons.TryGetValue(coordinate, out var loggedReason))
 				return (loggedReason, "Taken from the latest AutoFarm log");
 			if (state == "AttackSent")
 				return ("Attack sent", "Fleet dispatch was recorded");
+			if (reportId > 0 && processedReportOutcomes.TryGetValue(reportId, out var processedOutcome) &&
+				string.Equals(processedOutcome, ManualReviewDefenseOutcome, StringComparison.OrdinalIgnoreCase))
+				return ("Manual review: defense detected", "AutoFarm kept this espionage report for manual handling");
 			if (blacklist.TryGetValue(coordinate, out var entry))
 				return ($"Blacklisted until {entry.ExpiresAtUtc.ToLocalTime():yyyy-MM-dd HH:mm}", $"Reason: {entry.Reason}");
 			if (reportId > 0 && ((consumedReportId.HasValue && consumedReportId.Value == reportId) || consumedReportIds.Contains(reportId)))

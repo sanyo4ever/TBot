@@ -1,5 +1,7 @@
 param(
-	[string]$ReleaseName = 'release-build-beta6-final'
+	[string]$ReleaseName = 'release-build-beta6-final',
+	[string]$Version = '3.5.0-beta6',
+	[string]$AssemblyVersion = '3.5.0.6'
 )
 
 $repoRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
@@ -28,10 +30,10 @@ foreach ($platform in $platforms) {
 
 	dotnet publish (Join-Path $repoRoot 'TBot') `
 		-c Release `
-		-p:Version=3.5.0-beta6 `
-		-p:AssemblyVersion=3.5.0.6 `
-		-p:FileVersion=3.5.0.6 `
-		-p:InformationalVersion=3.5.0-beta6 `
+		-p:Version=$Version `
+		-p:AssemblyVersion=$AssemblyVersion `
+		-p:FileVersion=$AssemblyVersion `
+		-p:InformationalVersion=$Version `
 		-r $platform.Runtime `
 		-o $packageRoot `
 		-p:PublishSingleFile=true --self-contained true
@@ -76,9 +78,9 @@ foreach ($platform in $platforms) {
 		throw "Session or database data found in $($platform.Name)"
 	}
 
-	$zipPath = Join-Path $releaseRoot "TBot-v3.5.0-beta6-$($platform.Name).zip"
+	$zipPath = Join-Path $releaseRoot "TBot-v$Version-$($platform.Name).zip"
 	Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal
 	Write-Output "Packaged $zipPath"
 }
 
-Write-Output 'All seven beta 6 platform packages built.'
+Write-Output "All seven $Version platform packages built."

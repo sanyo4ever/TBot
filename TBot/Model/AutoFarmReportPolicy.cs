@@ -12,6 +12,24 @@ namespace TBot.Model {
 	/// whether older reports are processed.
 	/// </summary>
 	public static class AutoFarmReportPolicy {
+		public const string ManualReviewDefenseOutcome = "ManualReviewDefense";
+
+		/// <summary>
+		/// A report with known planetary defences is intentionally left in OGame
+		/// for manual handling. This is separate from AutoFarm's eligibility
+		/// decision: the target may be unsuitable for automated cargo attacks, but
+		/// the report itself remains useful to the player.
+		/// </summary>
+		public static bool ShouldPreserveForManualReview(
+			EspionageReport report,
+			bool keepReportsWithDefense) {
+			return keepReportsWithDefense && report?.HasDefensiveStructures() == true;
+		}
+
+		public static bool IsManualReviewDefense(string outcome) {
+			return string.Equals(outcome, ManualReviewDefenseOutcome, StringComparison.OrdinalIgnoreCase);
+		}
+
 		public static bool ShouldStopAfterKnownReport(bool deletionSucceeded) {
 			return true;
 		}

@@ -170,6 +170,37 @@ namespace TBot.Tests {
 		}
 
 		[Fact]
+		public void AutoFarmPreservesOnlyReportsWithKnownDefensiveStructures() {
+			var report = new EspionageReport {
+				HasDefensesInformation = true,
+				RocketLauncher = 1
+			};
+
+			Assert.True(report.HasDefensiveStructures());
+			Assert.True(AutoFarmReportPolicy.ShouldPreserveForManualReview(report, true));
+			Assert.False(AutoFarmReportPolicy.ShouldPreserveForManualReview(report, false));
+		}
+
+		[Fact]
+		public void AutoFarmDoesNotPreserveEmptyOrFleetOnlyDefenceSections() {
+			var emptyDefences = new EspionageReport {
+				HasDefensesInformation = true,
+				RocketLauncher = 0,
+				PlasmaTurret = 0
+			};
+			var fleetOnly = new EspionageReport {
+				HasFleetInformation = true,
+				HasDefensesInformation = true,
+				LightFighter = 1
+			};
+
+			Assert.False(emptyDefences.HasDefensiveStructures());
+			Assert.False(AutoFarmReportPolicy.ShouldPreserveForManualReview(emptyDefences, true));
+			Assert.False(fleetOnly.HasDefensiveStructures());
+			Assert.False(AutoFarmReportPolicy.ShouldPreserveForManualReview(fleetOnly, true));
+		}
+
+		[Fact]
 		public void AutoFarmExpiresReportsOnlyAfterTheConfiguredUtcRetention() {
 			var reportDate = new DateTime(2026, 8, 25, 0, 0, 0, DateTimeKind.Utc);
 
@@ -1191,6 +1222,40 @@ VALUES (321, 1, 245, 6, 1, 'NotSuitable', '2026-08-25T00:00:00.0000000Z');";
 				Assert.Equal(101, dashboard.Attacks[0].ReportId);
 				Assert.Equal("[P:5:120:4]", dashboard.Attacks[0].Origin);
 				Assert.Equal("Attack", dashboard.Attacks[0].Mission);
+			} finally {
+				if (File.Exists(databasePath))
+					File.Delete(databasePath);
+			}
+		}
+
+		[Fact]
+		public void AutoFarmDashboardExplainsWhyAReportWithDefenseWasKept() {
+			var dataFolder = Path.Combine(AppContext.BaseDirectory, "data");
+			Directory.CreateDirectory(dataFolder);
+			var databasePath = Path.Combine(dataFolder, "autofarm_dashboard-defense-test.db");
+			var observedAt = new DateTime(2026, 8, 8, 12, 0, 0, DateTimeKind.Utc);
+			var coordinate = new Coordinate(5, 123, 8, Celestials.Planet);
+			var report = new EspionageReport {
+				ID = 102,
+				Date = observedAt,
+				Coordinate = coordinate,
+				HasDefensesInformation = true,
+				RocketLauncher = 1
+			};
+
+			try {
+				using (var store = new AutoFarmStateStore("autofarm_dashboard-defense-test.db", dataFolder)) {
+					store.UpsertTarget(
+						new FarmTarget(new Planet { Name = "Defended target", Coordinate = coordinate }, FarmState.NotSuitable, report),
+						observedAt);
+					store.RecordProcessedReport(report.ID, coordinate, AutoFarmReportPolicy.ManualReviewDefenseOutcome, observedAt);
+				}
+
+				var dashboard = new AutoFarmDashboardReader().Read("dashboard-defense-test");
+
+				Assert.Single(dashboard.Reports);
+				Assert.Equal("Manual review: defense detected", dashboard.Reports[0].Reason);
+				Assert.Equal("AutoFarm kept this espionage report for manual handling", dashboard.Reports[0].ReasonDetail);
 			} finally {
 				if (File.Exists(databasePath))
 					File.Delete(databasePath);
