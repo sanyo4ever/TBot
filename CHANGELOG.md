@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.5.0-beta8
+
+> **Beta warning:** This release contains a targeted OGame v13 discovery fix. It is still experimental; use **v3.4.9** if you need the known functional fallback.
+
+### Fixed
+
+#### AutoDiscovery
+
+- Fixed intermittent `400 BadRequest` responses when another worker refreshed OGame's shared AJAX token during a discovery dispatch.
+- Discovery dispatches now use the token returned with the system page being sent, for both individual and system-wide discoveries.
+- Missing page tokens now stop the dispatch cleanly instead of sending a request that OGame will reject.
+
+Build version: **3.5.0.8**
+Release channel: **Beta**
+
 ## v3.5.0-beta7
 
 > **Beta warning:** This release adds a change to AutoFarm report handling. It is still experimental; use **v3.4.9** if you need the known functional fallback.
