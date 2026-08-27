@@ -17,6 +17,11 @@
 - Added `AutoFarm.KeepReportsWithDefense`, enabled by default. Set it to `false` to restore automatic deletion of defense reports.
 - Added an explicit dashboard reason, `Manual review: defense detected`, for reports kept for manual handling.
 
+### OGamed v13 bridge
+
+- Fixed OGame v13 discovery dispatches returning a normal in-game `302` as an error.
+- Confirmed the fleet after this redirect without replaying the state-changing request, preventing duplicate discovery fleets.
+
 Build version: **3.5.0.7**
 Release channel: **Beta**
 
