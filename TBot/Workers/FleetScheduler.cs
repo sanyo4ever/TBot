@@ -453,6 +453,99 @@ if (fleet == null) return;
 			return DispatchFleet(origin, ships, destination, Missions.Expedition, speed, payload, playerClass, force: false, validateShips: true, reduceExpeditionPayload: true);
 		}
 
+		/// <summary>
+		/// Sends a lifeform discovery through the same per-account dispatch gate as
+		/// every other state-changing fleet action. The discovery endpoint builds the
+		/// fleet itself, so it cannot use DispatchFleet's ship validation pipeline.
+		/// </summary>
+		public async Task<DiscoveryDispatchResult> SendDiscovery(Celestial origin, Coordinate destination) {
+			await _dispatchSemaphore.WaitAsync();
+			try {
+				if (origin?.Coordinate == null || destination == null)
+					return new DiscoveryDispatchResult(DiscoveryDispatchStatus.Failed, "origin or destination is invalid");
+
+				try {
+					// The slot snapshot is part of the dispatch decision. It must be
+					// refreshed while the account-wide dispatch gate is held so another
+					// worker cannot consume the observed slot between the check and POST.
+					_tbotInstance.UserData.slots = await _tbotOgameBridge.UpdateSlots();
+					int slotsToLeaveFree = (int)_tbotInstance.InstanceSettings.General.SlotsToLeaveFree;
+					if (_tbotInstance.UserData.slots == null ||
+						_tbotInstance.UserData.slots.Free <= slotsToLeaveFree) {
+						var result = new DiscoveryDispatchResult(
+							DiscoveryDispatchStatus.NoSlots,
+							$"only {_tbotInstance.UserData.slots?.Free ?? 0} fleet slot(s) available; {slotsToLeaveFree} reserved");
+						_tbotInstance.log(LogLevel.Information, LogSender.FleetScheduler,
+							$"Discovery not sent from {origin.Coordinate}: {result.Message}.");
+						return result;
+					}
+
+					var sent = await _ogameService.SendDiscovery(origin, destination);
+					if (!sent) {
+						var result = new DiscoveryDispatchResult(
+							DiscoveryDispatchStatus.Rejected,
+							"OGame returned an unsuccessful discovery response");
+						_tbotInstance.log(LogLevel.Warning, LogSender.FleetScheduler,
+							$"Discovery rejected from {origin.Coordinate} to {destination}: {result.Message}.");
+						return result;
+					}
+
+					// A successful action is confirmed by the wrapper. Refreshing the
+					// local snapshot is useful for the next worker, but a refresh failure
+					// must not turn an already accepted game action into a retryable error.
+					try {
+						_tbotInstance.UserData.slots = await _tbotOgameBridge.UpdateSlots();
+					} catch (Exception refreshException) {
+						_tbotInstance.log(LogLevel.Debug, LogSender.FleetScheduler,
+							$"Discovery was accepted, but slot refresh failed: {refreshException.Message}");
+					}
+
+					return new DiscoveryDispatchResult(DiscoveryDispatchStatus.Sent, "discovery fleet accepted by OGame");
+				} catch (Exception e) {
+					_tbotInstance.log(LogLevel.Warning, LogSender.FleetScheduler,
+						$"Unable to send discovery fleet from {origin.Coordinate} to {destination}: {e.Message}");
+					return ClassifyDiscoveryDispatchException(e);
+				}
+			} finally {
+				_dispatchSemaphore.Release();
+			}
+		}
+
+		private static DiscoveryDispatchResult ClassifyDiscoveryDispatchException(Exception exception) {
+			var message = exception?.GetBaseException()?.Message?.Trim();
+			if (string.IsNullOrWhiteSpace(message))
+				message = "unknown discovery dispatch error";
+
+			if (message.Contains("code 100", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("still processing", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("previous request", StringComparison.OrdinalIgnoreCase))
+				return new DiscoveryDispatchResult(DiscoveryDispatchStatus.RequestPending, message);
+
+			if (message.Contains("not logged", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("logged out", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("login", StringComparison.OrdinalIgnoreCase))
+				return new DiscoveryDispatchResult(DiscoveryDispatchStatus.SessionExpired, message);
+
+			if (message.Contains("no ships", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("not enough ships", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("no pathfinder", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("not enough pathfinder", StringComparison.OrdinalIgnoreCase))
+				return new DiscoveryDispatchResult(DiscoveryDispatchStatus.NoShips, message);
+
+			if (message.Contains("slot", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("maximum number of fleets", StringComparison.OrdinalIgnoreCase))
+				return new DiscoveryDispatchResult(DiscoveryDispatchStatus.NoSlots, message);
+
+			if (message.Contains("position", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("target is not present", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("not available", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("cooldown", StringComparison.OrdinalIgnoreCase) ||
+				message.Contains("can't send discovery mission", StringComparison.OrdinalIgnoreCase))
+				return new DiscoveryDispatchResult(DiscoveryDispatchStatus.PositionUnavailable, message);
+
+			return new DiscoveryDispatchResult(DiscoveryDispatchStatus.Failed, message);
+		}
+
 		public bool LastFleetSnapshotWasFresh => _lastFleetSnapshotWasFresh;
 
 		private async Task<int> DispatchFleet(Celestial origin, Ships ships, Coordinate destination, Missions mission, decimal speed, Resources payload, CharacterClass playerClass, bool force, bool validateShips, bool reduceExpeditionPayload) {

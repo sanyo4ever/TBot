@@ -197,17 +197,18 @@ namespace Tbot.Services {
 		private async Task ResolveCaptcha() {
 
 			var captchaChallenge = await _ogameService.GetCaptchaChallenge();
-			if (captchaChallenge.Id.Length == 0) {
+			if (string.IsNullOrWhiteSpace(captchaChallenge?.Id)) {
 				log(LogLevel.Warning, LogSender.Tbot, "No captcha found. Unable to login.");
 				log(LogLevel.Warning, LogSender.Tbot, "Please check your credentials, language and universe name.");
 				log(LogLevel.Warning, LogSender.Tbot, "If your credentials are correct try refreshing your IP address.");
 				log(LogLevel.Warning, LogSender.Tbot, "If you are using a proxy, a VPN or hosting TBot on a VPS, be warned that Ogame blocks datacenters' IPs. You probably need a residential proxy.");
+				throw new UnableToLoginException("Unable to login: Gameforge did not return a CAPTCHA challenge.");
 			} else {
 				log(LogLevel.Information, LogSender.Tbot, "Trying to solve captcha...");
-				int answer = 0;
-				if (captchaChallenge.Icons != "" && captchaChallenge.Question != "" && captchaChallenge.Icons != null && captchaChallenge.Question != null) {
-					answer = OgameCaptchaSolver.GetCapcthaSolution(captchaChallenge.Icons, captchaChallenge.Question);
-				}
+				if (string.IsNullOrWhiteSpace(captchaChallenge.Icons) || string.IsNullOrWhiteSpace(captchaChallenge.Question))
+					throw new UnableToLoginException("The CAPTCHA challenge did not contain both images.");
+
+				int answer = OgameCaptchaSolver.GetCaptchaSolution(captchaChallenge.Icons, captchaChallenge.Question);
 				await _ogameService.SolveCaptcha(captchaChallenge.Id, answer);
 				await Task.Delay(RandomizeHelper.CalcRandomInterval(IntervalType.AFewSeconds));
 				await _ogameService.Login();

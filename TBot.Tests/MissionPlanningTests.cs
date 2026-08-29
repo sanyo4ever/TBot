@@ -243,6 +243,53 @@ namespace TBot.Tests {
 		}
 
 		[Fact]
+		public void DiscoveryDispatchPlannerUsesEveryOriginBeforeReusingOne() {
+			var planner = new DiscoveryDispatchPlanner(originCount: 13);
+			var selected = new List<int>();
+
+			for (var dispatch = 0; dispatch < 26; dispatch++) {
+				var origin = planner.SelectNextOrigin();
+				if (!origin.HasValue) {
+					Assert.True(planner.BeginNextRound());
+					origin = planner.SelectNextOrigin();
+				}
+
+				selected.Add(origin.Value);
+				planner.MarkSent(origin.Value);
+			}
+
+			Assert.Equal(Enumerable.Range(0, 13).Concat(Enumerable.Range(0, 13)), selected);
+		}
+
+		[Fact]
+		public void DiscoveryDispatchPlannerDoesNotRetryAnUnavailableOriginInTheSameCycle() {
+			var planner = new DiscoveryDispatchPlanner(originCount: 3);
+
+			Assert.Equal(0, planner.SelectNextOrigin());
+			planner.MarkUnavailable(0);
+			Assert.Equal(1, planner.SelectNextOrigin());
+			planner.MarkUnavailable(1);
+			Assert.Equal(2, planner.SelectNextOrigin());
+			planner.MarkUnavailable(2);
+
+			Assert.Null(planner.SelectNextOrigin());
+			Assert.False(planner.BeginNextRound());
+		}
+
+		[Fact]
+		public void DiscoveryDispatchPlannerCanRetryARejectedPositionAfterTheOtherOriginsHadTheirTurn() {
+			var planner = new DiscoveryDispatchPlanner(originCount: 2);
+
+			Assert.Equal(0, planner.SelectNextOrigin());
+			planner.MarkPositionUnavailable(0);
+			Assert.Equal(1, planner.SelectNextOrigin());
+			planner.MarkPositionUnavailable(1);
+
+			Assert.True(planner.BeginNextRound());
+			Assert.Equal(0, planner.SelectNextOrigin());
+		}
+
+		[Fact]
 		public void ExpeditionDispatchPlannerSkipsFailedOriginsAndUsesLaterOrigins() {
 			var planner = new ExpeditionDispatchPlanner(new[] { 0, 0, 0, 0, 0, 0 }, 1);
 			var dispatched = new List<int>();

@@ -946,10 +946,10 @@ namespace TBot.Tests {
 			var alias = $"attack-after-scan-{Guid.NewGuid():N}";
 			var dataFolder = Path.Combine(AppContext.BaseDirectory, "data");
 			var databasePath = Path.Combine(dataFolder, $"autofarm_{alias}.db");
-			var origin = new Planet {
+			var origin = new Moon {
 				ID = 10,
 				Name = "Farm origin",
-				Coordinate = new Coordinate(1, 1, 8, Celestials.Planet),
+				Coordinate = new Coordinate(1, 1, 8, Celestials.Moon),
 				Ships = new Ships(largeCargo: 100),
 				Resources = new Resources(deuterium: 100000),
 				LFBonuses = new LFBonuses()
@@ -1096,6 +1096,149 @@ namespace TBot.Tests {
 				Assert.Equal(1, fleets.Single(fleet => fleet.Mission == Missions.Attack).Ships.GetAmount(Buildables.LargeCargo));
 				Assert.Equal(FarmState.AttackSent, Assert.Single(userData.farmTargets).State);
 				Assert.Equal(report.ID, userData.farmTargets[0].ConsumedReportId);
+			} finally {
+				if (File.Exists(databasePath))
+					File.Delete(databasePath);
+			}
+		}
+
+		[Fact]
+		public async Task AutoFarmDispatchesFromAMoonWhenEnoughSmallCargoIsAvailable() {
+			var alias = $"attack-from-moon-{Guid.NewGuid():N}";
+			var dataFolder = Path.Combine(AppContext.BaseDirectory, "data");
+			var databasePath = Path.Combine(dataFolder, $"autofarm_{alias}.db");
+			var origin = new Planet {
+				ID = 12,
+				Name = "Moon farm origin",
+				Coordinate = new Coordinate(1, 1, 8, Celestials.Planet),
+				Ships = new Ships(smallCargo: 100),
+				Resources = new Resources(deuterium: 100000),
+				LFBonuses = new LFBonuses()
+			};
+			var targetCoordinate = new Coordinate(1, 2, 7, Celestials.Planet);
+			var report = new EspionageReport {
+				ID = 993101,
+				Coordinate = targetCoordinate,
+				Date = DateTime.UtcNow,
+				IsInactive = true,
+				Metal = 100000,
+				HasFleetInformation = true,
+				HasDefensesInformation = true
+			};
+			var target = new FarmTarget(
+				new Planet { Name = "Farm target", Inactive = true, Coordinate = targetCoordinate },
+				FarmState.AttackPending,
+				report);
+			var userData = CreateUserData();
+			userData.celestials = new List<Celestial> { origin };
+			userData.farmTargets.Add(target);
+			userData.autoFarmReportPhasePending = true;
+			userData.slots = new Slots { Total = 10, InUse = 0 };
+			userData.serverData = new ServerData { Galaxies = 6, Systems = 499, ProbeCargo = 0 };
+			userData.researches = new Researches { HyperspaceTechnology = 10 };
+
+			var settings = SettingsService.GetMergedSettingsFromContents(
+				"""
+{
+  "General": {
+    "SlotsToLeaveFree": 0,
+    "SlotPriorityLevel": { "Brain": 1, "Expeditions": 1, "AutoFarm": 1, "Colonize": 1, "AutoDiscovery": 1, "AutoHarvest": 1 }
+  },
+  "SleepMode": { "Active": false },
+  "Brain": {
+    "Active": false,
+    "Transports": { "Active": false, "MaxSlots": 0 },
+    "AutoMine": { "Active": false }, "AutoResearch": { "Active": false },
+    "LifeformAutoMine": { "Active": false }, "LifeformAutoResearch": { "Active": false }
+  },
+  "Expeditions": { "Active": false },
+  "AutoColonize": { "Active": false, "IntensiveResearch": { "Active": false, "MaxSlots": 0 } },
+  "AutoDiscovery": { "Active": false, "MaxSlots": 0 },
+  "AutoHarvest": { "Active": false, "MaxSlots": 0 },
+  "AutoFarm": {
+    "Active": true, "ExcludeMoons": true, "ScanRange": [], "Exclude": [], "Origin": [],
+    "KeepReportFor": 0, "NumProbes": 1, "TargetsProbedBeforeAttack": 100,
+    "CargoType": "SmallCargo", "FleetSpeed": 100, "MinCargosToKeep": 0, "MinCargosToSend": 1,
+    "CargoSurplusPercentage": 0, "BuildCargos": false, "BuildProbes": false,
+    "MinimumResources": 1, "MinimumPlayerRank": 0, "MaxFlightTime": 0, "MinLootFuelRatio": 0,
+    "PreferedResource": "", "ProcessAllReports": false, "MaxSlots": 1,
+    "SlotsToLeaveFree": 0, "CheckIntervalMin": 1, "CheckIntervalMax": 1,
+    "StopAfterFullScan": false, "Blacklist": { "Active": false }
+  }
+}
+""",
+				new List<string> { "{}" });
+			var sentOrigins = new List<Coordinate>();
+			var sentTargets = new List<Coordinate>();
+			var fleets = new List<Fleet>();
+			var parent = CreateParent(alias, settings, userData);
+			var ogame = Proxy<IOgameService>.Create((method, _) => method.Name switch {
+				nameof(IOgameService.GetEspionageReportsPage) => Task.FromResult(new List<EspionageReportSummary>()),
+				_ => Proxy<IOgameService>.Default(method.ReturnType)
+			});
+			var bridge = Proxy<ITBotOgamedBridge>.Create((method, args) => {
+				if (method.Name == nameof(ITBotOgamedBridge.GetDateTime))
+					return Task.FromResult(DateTime.UtcNow);
+				if (method.Name == nameof(ITBotOgamedBridge.UpdateResearches))
+					return Task.FromResult(userData.researches);
+				if (method.Name == nameof(ITBotOgamedBridge.UpdateCelestials))
+					return Task.FromResult(userData.celestials);
+				if (method.Name == nameof(ITBotOgamedBridge.UpdateSlots))
+					return Task.FromResult(new Slots { Total = 10, InUse = fleets.Count });
+				if (method.Name == nameof(ITBotOgamedBridge.CheckCelestials))
+					return Task.FromResult(true);
+				if (method.Name == nameof(ITBotOgamedBridge.UpdatePlanet))
+					return Task.FromResult((Celestial)args[0]);
+				return Proxy<ITBotOgamedBridge>.Default(method.ReturnType);
+			});
+			var scheduler = Proxy<IFleetScheduler>.Create((method, args) => {
+				if (method.Name == nameof(IFleetScheduler.UpdateFleets))
+					return Task.FromResult(fleets.ToList());
+				if (method.Name == "get_LastFleetSnapshotWasFresh")
+					return true;
+				if (method.Name == nameof(IFleetScheduler.SendValidatedFleet)) {
+					sentOrigins.Add(((Celestial)args[0]).Coordinate);
+					sentTargets.Add((Coordinate)args[2]);
+					fleets.Add(new Fleet {
+						ID = 993102,
+						Mission = Missions.Attack,
+						Origin = ((Celestial)args[0]).Coordinate,
+						Destination = (Coordinate)args[2],
+						Ships = (Ships)args[1]
+					});
+					return Task.FromResult(993102);
+				}
+				return Proxy<IFleetScheduler>.Default(method.ReturnType);
+			});
+			var calculation = Proxy<ICalculationService>.Create((method, args) => {
+				if (method.Name == nameof(ICalculationService.CalcSlotsPriority))
+					return 1;
+				if (method.Name == nameof(ICalculationService.CalcDistance))
+					return 1;
+				if (method.Name == nameof(ICalculationService.CalcShipNumberForPayload))
+					return 1L;
+				if (method.Name == nameof(ICalculationService.CalcFleetCapacity))
+					return ((Ships)args[0]).GetAmount(Buildables.SmallCargo) * 100000L;
+				if (method.Name == nameof(ICalculationService.CalcFleetPrediction))
+					return new FleetPrediction { Time = 1, Fuel = 1 };
+				if (method.Name == nameof(ICalculationService.GetMissionsInProgress))
+					return new List<Fleet>();
+				if (method.Name == nameof(ICalculationService.GetValidSpeedsForClass))
+					return new List<decimal> { Speeds.HundredPercent };
+				return Proxy<ICalculationService>.Default(method.ReturnType);
+			});
+
+			try {
+				var worker = new AutoFarmWorker(parent, ogame, scheduler, calculation, bridge);
+				var execute = typeof(AutoFarmWorker).GetMethod("Execute", BindingFlags.Instance | BindingFlags.NonPublic);
+				Assert.NotNull(execute);
+
+				await (Task)execute.Invoke(worker, null);
+
+				Assert.Equal(new[] { targetCoordinate }, sentTargets);
+				Assert.Equal(new[] { origin.Coordinate }, sentOrigins);
+				Assert.Equal(1, fleets.Single(fleet => fleet.Mission == Missions.Attack).Ships.GetAmount(Buildables.SmallCargo));
+				Assert.Equal(FarmState.AttackSent, Assert.Single(userData.farmTargets).State);
 			} finally {
 				if (File.Exists(databasePath))
 					File.Delete(databasePath);

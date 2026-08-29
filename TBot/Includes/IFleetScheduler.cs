@@ -18,6 +18,7 @@ namespace Tbot.Includes {
 		Task<int> SendFleet(Celestial origin, Ships ships, Coordinate destination, Missions mission, decimal speed, Resources payload = null, CharacterClass playerClass = CharacterClass.NoClass, bool force = false);
 		Task<int> SendValidatedFleet(Celestial origin, Ships ships, Coordinate destination, Missions mission, decimal speed, Resources payload = null, CharacterClass playerClass = CharacterClass.NoClass, bool force = false);
 		Task<int> SendExpedition(Celestial origin, Ships ships, Coordinate destination, decimal speed, Resources payload = null, CharacterClass playerClass = CharacterClass.NoClass);
+		Task<DiscoveryDispatchResult> SendDiscovery(Celestial origin, Coordinate destination);
 		bool LastFleetSnapshotWasFresh { get; }
 		Task CancelFleet(Fleet fleet);
 		Task<List<Fleet>> UpdateFleets();

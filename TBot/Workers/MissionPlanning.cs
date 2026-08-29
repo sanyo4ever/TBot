@@ -146,6 +146,94 @@ namespace Tbot.Workers {
 		}
 	}
 
+	/// <summary>
+	/// Gives each discovery origin one dispatch opportunity per round. Origins that
+	/// cannot provide discovery ships are removed for the current execution; a
+	/// position that is merely unavailable is allowed to advance and be retried in
+	/// the next round.
+	/// </summary>
+	public sealed class DiscoveryDispatchPlanner {
+		private readonly bool[] _unavailable;
+		private readonly bool[] _attemptedThisRound;
+		private int _nextIndex;
+		private int _successfulDispatchesThisRound;
+		private bool _retryablePositionThisRound;
+
+		public DiscoveryDispatchPlanner(int originCount, int startIndex = 0) {
+			if (originCount <= 0)
+				throw new ArgumentOutOfRangeException(nameof(originCount));
+
+			_unavailable = new bool[originCount];
+			_attemptedThisRound = new bool[originCount];
+			_nextIndex = NormalizeIndex(startIndex, originCount);
+		}
+
+		public int? SelectNextOrigin() {
+			for (var offset = 0; offset < _attemptedThisRound.Length; offset++) {
+				var index = (_nextIndex + offset) % _attemptedThisRound.Length;
+				if (_unavailable[index] || _attemptedThisRound[index])
+					continue;
+
+				_attemptedThisRound[index] = true;
+				return index;
+			}
+
+			return null;
+		}
+
+		public void MarkUnavailable(int originIndex) {
+			ValidateIndex(originIndex);
+			_unavailable[originIndex] = true;
+		}
+
+		public void MarkSent(int originIndex) {
+			ValidateIndex(originIndex);
+			_successfulDispatchesThisRound++;
+			_nextIndex = (originIndex + 1) % _attemptedThisRound.Length;
+		}
+
+		public void MarkPositionUnavailable(int originIndex) {
+			ValidateIndex(originIndex);
+			_retryablePositionThisRound = true;
+		}
+
+		/// <summary>
+		/// Starts another round after a successful dispatch or a position rejection
+		/// that advanced an origin cursor. An all-empty cycle therefore ends without
+		/// repeatedly querying the same systems.
+		/// </summary>
+		public bool BeginNextRound() {
+			if (_successfulDispatchesThisRound == 0 && !_retryablePositionThisRound)
+				return false;
+
+			_successfulDispatchesThisRound = 0;
+			_retryablePositionThisRound = false;
+			for (var index = 0; index < _attemptedThisRound.Length; index++)
+				_attemptedThisRound[index] = false;
+
+			return HasSelectableOrigin();
+		}
+
+		private bool HasSelectableOrigin() {
+			for (var index = 0; index < _unavailable.Length; index++) {
+				if (!_unavailable[index])
+					return true;
+			}
+
+			return false;
+		}
+
+		private void ValidateIndex(int originIndex) {
+			if (originIndex < 0 || originIndex >= _unavailable.Length)
+				throw new ArgumentOutOfRangeException(nameof(originIndex));
+		}
+
+		private static int NormalizeIndex(int index, int count) {
+			var normalized = index % count;
+			return normalized < 0 ? normalized + count : normalized;
+		}
+	}
+
 	public static class ExpeditionPayloadPolicy {
 		public static long GetDeuteriumPayload(long requested, long available, long flightFuel, long cargoCapacity) {
 			var remainingAfterFuel = Math.Max(0, available - Math.Max(0, flightFuel));

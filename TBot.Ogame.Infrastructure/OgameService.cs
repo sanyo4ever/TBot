@@ -291,16 +291,26 @@ namespace TBot.Ogame.Infrastructure {
 		}
 
 		private async Task<T> PostAsync<T>(string resource, params KeyValuePair<string, string>[] parameters) {
-			var response = await GetRetryPolicy()
-				.ExecuteAsync(async () => {
-					var request = new HttpRequestMessage() {
-						Method = HttpMethod.Post,
-						RequestUri = new Uri(resource, UriKind.Relative)
-					};
-					request.Content = new FormUrlEncodedContent(parameters);
-					var response = await _client.SendAsync(request);
-					return response;
-				});
+			return await PostAsyncCore<T>(true, resource, parameters);
+		}
+
+		private async Task<T> PostAsyncNoRetry<T>(string resource, params KeyValuePair<string, string>[] parameters) {
+			return await PostAsyncCore<T>(false, resource, parameters);
+		}
+
+		private async Task<T> PostAsyncCore<T>(bool retry, string resource, KeyValuePair<string, string>[] parameters) {
+			Func<Task<HttpResponseMessage>> send = async () => {
+				var request = new HttpRequestMessage() {
+					Method = HttpMethod.Post,
+					RequestUri = new Uri(resource, UriKind.Relative)
+				};
+				request.Content = new FormUrlEncodedContent(parameters);
+				return await _client.SendAsync(request);
+			};
+
+			var response = retry
+				? await GetRetryPolicy().ExecuteAsync(send)
+				: await send();
 			return await ManageResponse<T>(response);
 		}
 
@@ -317,11 +327,7 @@ namespace TBot.Ogame.Infrastructure {
 		}
 
 		public async Task<CaptchaChallenge> GetCaptchaChallenge() {
-			try {
-				return await GetAsync<CaptchaChallenge>("/bot/captcha/challenge");
-			} catch {
-				return new CaptchaChallenge();
-			}
+			return await GetAsync<CaptchaChallenge>("/bot/captcha/challenge");
 		}
 
 		public async Task SolveCaptcha(string challengeID, int answer) {
@@ -1042,21 +1048,15 @@ namespace TBot.Ogame.Infrastructure {
 			return phalanxedFleets;
 		}
 		public async Task<bool> SendDiscovery(Celestial origin, Coordinate coords) {
-			bool success = false;
-			try {
-				List<KeyValuePair<string, string>> parameters = new List<KeyValuePair<string, string>>();
-				parameters.Add(new KeyValuePair<string, string>("galaxy", coords.Galaxy.ToString()));
-				parameters.Add(new KeyValuePair<string, string>("system", coords.System.ToString()));
-				parameters.Add(new KeyValuePair<string, string>("position", coords.Position.ToString()));
-				success = await PostAsync<bool>($"/bot/planets/{origin.ID}/send-discovery", parameters.ToArray());
-			} catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.BadRequest) {
-				success = false;
-			} catch (OgamedException e) {
-				success = false;
-			} catch (Exception e) {
-				success = false;
-			}
-			return success;
+			List<KeyValuePair<string, string>> parameters = new List<KeyValuePair<string, string>>();
+			parameters.Add(new KeyValuePair<string, string>("galaxy", coords.Galaxy.ToString()));
+			parameters.Add(new KeyValuePair<string, string>("system", coords.System.ToString()));
+			parameters.Add(new KeyValuePair<string, string>("position", coords.Position.ToString()));
+			// This POST changes the game state. Retrying a 408/429/5xx here can
+			// duplicate a discovery because the server may have accepted the first
+			// request before the transport reported the failure. The wrapper is
+			// responsible for reconciling its own ambiguous OGame response.
+			return await PostAsyncNoRetry<bool>($"/bot/planets/{origin.ID}/send-discovery", parameters.ToArray());
 		}
 
 		        public async Task<List<Coordinate>> GetPositionsAvailableForDiscoveryFleet(Celestial celestial, Coordinate coordinate) {

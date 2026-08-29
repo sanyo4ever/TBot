@@ -24,13 +24,32 @@ namespace Tbot.Workers {
 		private readonly AutoDiscoveryCursorStore _cursorStore;
 
 		private readonly Dictionary<string, DiscoveryCursorState> _originCursors = new();
+		private int _nextOriginIndex;
+
+		private enum DiscoveryOriginAttemptResult {
+			NoCandidate,
+			Sent,
+			PositionUnavailable,
+			NoShips,
+			Unavailable,
+			Stopped
+		}
 
 		private sealed class DiscoveryRunContext {
 			public int FleetsToSend;
+			public int DiscoveriesRemaining;
 			public bool Stop;
 			public int Skips;
 			public int GlobalAttempts;
 			public int MaxGlobalAttempts;
+			public int Sent;
+			public Dictionary<DiscoveryDispatchStatus, int> Outcomes { get; } = new();
+
+			public void Record(DiscoveryDispatchStatus status) {
+				Outcomes[status] = Outcomes.TryGetValue(status, out var count) ? count + 1 : 1;
+				if (status == DiscoveryDispatchStatus.Sent)
+					Sent++;
+			}
 		}
 
 		public AutoDiscoveryWorker(ITBotMain parentInstance,
@@ -137,9 +156,12 @@ namespace Tbot.Workers {
 					c.Coordinate.Type == wantedType
 				);
 
-				if (found != null)
-					result.Add(found);
-				else
+				if (found != null) {
+					if (!result.Any(existing => existing?.Coordinate != null && existing.Coordinate.IsSame(found.Coordinate)))
+						result.Add(found);
+					else
+						DoLog(LogLevel.Debug, $"Duplicate AutoDiscovery origin ignored: {found.Coordinate}.");
+				} else
 					_tbotInstance.log(LogLevel.Warning, LogSender.AutoDiscovery,
 						$"AutoDiscovery origin not found in user celestials: {galaxy}:{system}:{position} ({typeStr})");
 			}
@@ -165,14 +187,14 @@ namespace Tbot.Workers {
 			return cursor;
 		}
 
-		private async Task<int> ProcessOneSystemForOrigin(
+		private async Task<DiscoveryOriginAttemptResult> ProcessOneSystemForOrigin(
 			Celestial origin,
 			DiscoveryCursorState cursor,
-			int discoveries,
 			DiscoveryRunContext ctx) {
 
-			if (origin?.Coordinate == null) return discoveries;
-			if (discoveries <= 0 || ctx.FleetsToSend <= 0 || ctx.Stop) return discoveries;
+			if (origin?.Coordinate == null) return DiscoveryOriginAttemptResult.Unavailable;
+			if (ctx.DiscoveriesRemaining <= 0 || ctx.FleetsToSend <= 0 || ctx.Stop)
+				return DiscoveryOriginAttemptResult.Stopped;
 
 			DateTime now = await _tbotOgameBridge.GetDateTime();
 			int systemToDo = cursor.System;
@@ -188,7 +210,7 @@ namespace Tbot.Workers {
 			} catch (Exception e) {
 				DoLog(LogLevel.Warning,
 					$"System view failed for {origin.Coordinate.Galaxy}:{systemToDo}; no discovery positions will be probed this cycle: {e.Message}");
-				return discoveries;
+				return DiscoveryOriginAttemptResult.Unavailable;
 			}
 
 			var availablePositions = new HashSet<int>(
@@ -211,7 +233,7 @@ namespace Tbot.Workers {
 				availablePositions,
 				cursor.NextPosition,
 				blacklistedPositions,
-				Math.Min(discoveries, ctx.FleetsToSend));
+				maximum: 1);
 
 			DoLog(LogLevel.Debug,
 				$"System {origin.Coordinate.Galaxy}:{systemToDo} reports {availablePositions.Count} available discovery positions; planned {plannedPositions.Count}.");
@@ -219,14 +241,19 @@ namespace Tbot.Workers {
 			if (plannedPositions.Count == 0) {
 				cursor.SkipSystem(systemToDo, maxSystem);
 				_cursorStore.Save(OriginKey(origin), cursor);
-				return discoveries;
+				DoLog(LogLevel.Debug,
+					$"Origin {origin} found no usable discovery position in system {origin.Coordinate.Galaxy}:{systemToDo}; cursor advanced to {cursor.System}:{cursor.NextPosition}.");
+				return DiscoveryOriginAttemptResult.NoCandidate;
 			}
 
 			foreach (int pos in plannedPositions) {
-				if (discoveries <= 0 || ctx.FleetsToSend <= 0 || ctx.Stop) break;
-				if (_tbotInstance.UserData.slots.Free <= (int)_tbotInstance.InstanceSettings.General.SlotsToLeaveFree) { ctx.Stop = true; break; }
+				if (ctx.DiscoveriesRemaining <= 0 || ctx.FleetsToSend <= 0 || ctx.Stop)
+					return DiscoveryOriginAttemptResult.Stopped;
 
-				if (++ctx.GlobalAttempts > ctx.MaxGlobalAttempts) { ctx.Stop = true; break; }
+				if (++ctx.GlobalAttempts > ctx.MaxGlobalAttempts) {
+					ctx.Stop = true;
+					return DiscoveryOriginAttemptResult.Stopped;
+				}
 
 				var dest = new Coordinate {
 					Galaxy = origin.Coordinate.Galaxy,
@@ -235,31 +262,64 @@ namespace Tbot.Workers {
 					Type = Celestials.Planet
 				};
 
-				// Commit before sending so a failed request cannot retry the same position
-				// repeatedly. The system view already filtered unavailable positions.
+				if (IsBlacklistedAndActive(dest, now)) {
+					ctx.Skips++;
+					cursor.CommitPosition(systemToDo, pos, maxSystem);
+					_cursorStore.Save(OriginKey(origin), cursor);
+					return DiscoveryOriginAttemptResult.NoCandidate;
+				}
+
+				DiscoveryDispatchResult dispatchResult;
+				try {
+					// Discovery dispatches share FleetScheduler's account-wide gate with
+					// expeditions, farming and harvesting. The scheduler also prevents a
+					// concurrent worker from observing and consuming the same slot.
+					dispatchResult = await _fleetScheduler.SendDiscovery(origin, dest);
+				} catch (Exception e) {
+					dispatchResult = new DiscoveryDispatchResult(DiscoveryDispatchStatus.Failed, e.Message);
+					DoLog(LogLevel.Warning, $"Discovery dispatch failed for {dest} from {origin}: {e.Message}");
+				}
+				ctx.Record(dispatchResult.Status);
+
+				// The cursor records that this position was examined, not that it was
+				// accepted. This prevents a failed position from trapping the worker on
+				// the same coordinate while allowing it to be retried on a later pass.
 				cursor.CommitPosition(systemToDo, pos, maxSystem);
 				_cursorStore.Save(OriginKey(origin), cursor);
 
-				if (IsBlacklistedAndActive(dest, now)) {
-					ctx.Skips++;
-					continue;
-				}
-
-				var ok = await _ogameService.SendDiscovery(origin, dest);
-				if (ok) {
+				if (dispatchResult.IsConfirmed) {
 					DoLog(LogLevel.Information, $"Discovery fleet sent to {dest} from {origin}.");
-					discoveries--;
+					ctx.DiscoveriesRemaining--;
 					ctx.FleetsToSend--;
+					// Only a confirmed dispatch earns a long cooldown. A rejected or
+					// transiently failed request must not make a valid position disappear
+					// for seven days.
+					UpsertBlacklist(dest, now.AddDays(7));
+					return DiscoveryOriginAttemptResult.Sent;
 				} else {
-					DoLog(LogLevel.Warning, $"Failed to send discovery fleet to {dest} from {origin}.");
-				}
+					DoLog(dispatchResult.Status == DiscoveryDispatchStatus.PositionUnavailable ||
+						dispatchResult.Status == DiscoveryDispatchStatus.NoShips
+						? LogLevel.Debug
+						: LogLevel.Warning,
+						$"Discovery not sent to {dest} from {origin}: {dispatchResult.Status} — {dispatchResult.Message}.");
+					if (dispatchResult.Status == DiscoveryDispatchStatus.NoShips) {
+						DoLog(LogLevel.Information,
+							$"Origin {origin} has no usable discovery ships; skipping this origin for the current cycle.");
+						return DiscoveryOriginAttemptResult.NoShips;
+					}
+					if (dispatchResult.Status == DiscoveryDispatchStatus.NoSlots ||
+						dispatchResult.Status == DiscoveryDispatchStatus.RequestPending ||
+						dispatchResult.Status == DiscoveryDispatchStatus.SessionExpired ||
+						dispatchResult.Status == DiscoveryDispatchStatus.Failed) {
+						ctx.Stop = true;
+						return DiscoveryOriginAttemptResult.Stopped;
+					}
 
-				// Keep a failed or sent position out of the next planning pass.
-				UpsertBlacklist(dest, now.AddDays(7));
-				_tbotInstance.UserData.slots = await _tbotOgameBridge.UpdateSlots();
+					return DiscoveryOriginAttemptResult.PositionUnavailable;
+				}
 			}
 
-			return discoveries;
+			return DiscoveryOriginAttemptResult.NoCandidate;
 		}
 
 
@@ -385,29 +445,70 @@ namespace Tbot.Workers {
 
 				var ctx = new DiscoveryRunContext {
 					FleetsToSend = Math.Min(fleetsToSend, discoveries),
+					DiscoveriesRemaining = discoveries,
 					Stop = false,
 					Skips = 0,
 					GlobalAttempts = 0,
 					MaxGlobalAttempts = 600
 				};
 
-				foreach (var origin in origins) {
-					if (ctx.Stop) break;
-					if (ctx.FleetsToSend <= 0) break;
-					if (origin?.Coordinate == null) continue;
+				var dispatchPlanner = new DiscoveryDispatchPlanner(origins.Count, _nextOriginIndex);
+				var round = 1;
+				while (!ctx.Stop && ctx.FleetsToSend > 0 && ctx.DiscoveriesRemaining > 0) {
+					var originIndex = dispatchPlanner.SelectNextOrigin();
+					if (!originIndex.HasValue) {
+						if (!dispatchPlanner.BeginNextRound()) {
+							DoLog(LogLevel.Information,
+								"AutoDiscovery stopped: no origin could provide another discovery fleet in this cycle.");
+							break;
+						}
+
+						round++;
+						DoLog(LogLevel.Debug,
+							$"AutoDiscovery starting origin round {round}; remaining={ctx.FleetsToSend}.");
+						continue;
+					}
+
+					var origin = origins[originIndex.Value];
+					if (origin?.Coordinate == null) {
+						dispatchPlanner.MarkUnavailable(originIndex.Value);
+						continue;
+					}
 
 					var cursor = GetOrInitCursor(origin);
-					DoLog(LogLevel.Information, $"Origin {origin} cursor system={cursor.System}, nextPos={cursor.NextPosition} (discoveries={discoveries})");
+					DoLog(LogLevel.Information,
+						$"Origin {origin} selected (round={round}, cursor={cursor.System}:{cursor.NextPosition}, remaining={ctx.FleetsToSend}).");
 
-					discoveries = await ProcessOneSystemForOrigin(origin, cursor, discoveries, ctx);
-
-					fleetsToSend = ctx.FleetsToSend;
-					stop = ctx.Stop;
-					skips = ctx.Skips;
+					var attempt = await ProcessOneSystemForOrigin(origin, cursor, ctx);
+					switch (attempt) {
+						case DiscoveryOriginAttemptResult.Sent:
+							dispatchPlanner.MarkSent(originIndex.Value);
+							_nextOriginIndex = (originIndex.Value + 1) % origins.Count;
+							break;
+						case DiscoveryOriginAttemptResult.NoShips:
+						case DiscoveryOriginAttemptResult.Unavailable:
+							dispatchPlanner.MarkUnavailable(originIndex.Value);
+							DoLog(LogLevel.Information,
+								$"Origin {origin} skipped for the remainder of this AutoDiscovery cycle: {attempt}.");
+							break;
+						case DiscoveryOriginAttemptResult.PositionUnavailable:
+							dispatchPlanner.MarkPositionUnavailable(originIndex.Value);
+							break;
+					}
 				}
+
+				stop = ctx.Stop;
+				skips = ctx.Skips;
 
 				if (skips > 0)
 					DoLog(LogLevel.Information, $"{skips} positions skipped (blacklisted)");
+				if (ctx.Outcomes.Count > 0) {
+					var outcomeSummary = string.Join(", ", ctx.Outcomes
+						.OrderBy(entry => entry.Key.ToString())
+						.Select(entry => $"{entry.Key}={entry.Value}"));
+					DoLog(LogLevel.Information,
+						$"AutoDiscovery cycle summary: sent={ctx.Sent}, remaining={ctx.FleetsToSend}; {outcomeSummary}.");
+				}
 
 				_tbotInstance.UserData.fleets = await _fleetScheduler.UpdateFleets();
 

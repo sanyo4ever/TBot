@@ -12,6 +12,7 @@ using Tbot.Workers;
 using TBot.Common.Logging;
 using TBot.Ogame.Infrastructure;
 using TBot.Ogame.Infrastructure.Enums;
+using TBot.Ogame.Infrastructure.Exceptions;
 using TBot.Ogame.Infrastructure.Models;
 using TBot.Model;
 using Xunit;
@@ -107,6 +108,135 @@ namespace TBot.Tests {
 		}
 
 		[Fact]
+		public async Task DiscoveryDispatchesAreSerializedAcrossWorkers() {
+			var settings = SettingsService.GetMergedSettingsFromContents(
+				"{\"General\":{\"SlotsToLeaveFree\":0},\"SleepMode\":{\"Active\":false}}",
+				new List<string> { "{}" });
+			var origin = new Planet {
+				ID = 12,
+				Coordinate = new Coordinate(1, 30, 8, Celestials.Planet)
+			};
+			var destination = new Coordinate(1, 31, 8, Celestials.Planet);
+			var userData = CreateUserData();
+			var parent = CreateParent(settings, userData);
+			var probe = new ConcurrencyProbe();
+			var ogame = Proxy<IOgameService>.Create((method, _) => {
+				if (method.Name == nameof(IOgameService.SendDiscovery))
+					return SendDiscoveryWithConcurrencyProbe(probe);
+
+				return Proxy<IOgameService>.Default(method.ReturnType);
+			});
+
+			var scheduler = CreateScheduler(parent, ogame);
+			var sends = new List<Task<DiscoveryDispatchResult>>();
+			for (var i = 0; i < 16; i++)
+				sends.Add(scheduler.SendDiscovery(origin, destination));
+			var results = await Task.WhenAll(sends);
+
+			Assert.All(results, result => Assert.Equal(DiscoveryDispatchStatus.Sent, result.Status));
+			Assert.Equal(1, probe.MaxConcurrentSends);
+		}
+
+		[Fact]
+		public async Task DiscoveryBusyResponseIsReportedWithoutRetryingTheStateChangingRequest() {
+			var settings = SettingsService.GetMergedSettingsFromContents(
+				"{\"General\":{\"SlotsToLeaveFree\":0},\"SleepMode\":{\"Active\":false}}",
+				new List<string> { "{}" });
+			var origin = new Planet {
+				ID = 13,
+				Coordinate = new Coordinate(1, 30, 8, Celestials.Planet)
+			};
+			var destination = new Coordinate(1, 31, 8, Celestials.Planet);
+			var userData = CreateUserData();
+			var parent = CreateParent(settings, userData);
+			var sendCalls = 0;
+			var ogame = Proxy<IOgameService>.Create((method, _) => {
+				if (method.Name == nameof(IOgameService.SendDiscovery)) {
+					Interlocked.Increment(ref sendCalls);
+					return Task.FromException<bool>(new OgamedException(
+						"An error has occurred: Status Code: BadRequest Status: error - Message: previous request still being processed (code 100)"));
+				}
+
+				return Proxy<IOgameService>.Default(method.ReturnType);
+			});
+
+			var scheduler = CreateScheduler(parent, ogame);
+			var result = await scheduler.SendDiscovery(origin, destination);
+
+			Assert.Equal(DiscoveryDispatchStatus.RequestPending, result.Status);
+			Assert.Contains("code 100", result.Message);
+			Assert.Equal(1, sendCalls);
+		}
+
+		[Fact]
+		public async Task DiscoveryPathfinderShortageIsLocalToTheOrigin() {
+			var settings = SettingsService.GetMergedSettingsFromContents(
+				"{\"General\":{\"SlotsToLeaveFree\":0},\"SleepMode\":{\"Active\":false}}",
+				new List<string> { "{}" });
+			var origin = new Planet {
+				ID = 131,
+				Coordinate = new Coordinate(1, 30, 8, Celestials.Planet)
+			};
+			var destination = new Coordinate(1, 31, 8, Celestials.Planet);
+			var parent = CreateParent(settings, CreateUserData());
+			var ogame = Proxy<IOgameService>.Create((method, _) => {
+				if (method.Name == nameof(IOgameService.SendDiscovery))
+					return Task.FromException<bool>(new OgamedException(
+						"An error has occurred: Status Code: BadRequest Status: error - Message: not enough pathfinders"));
+
+				return Proxy<IOgameService>.Default(method.ReturnType);
+			});
+
+			var scheduler = CreateScheduler(parent, ogame);
+			var result = await scheduler.SendDiscovery(origin, destination);
+
+			Assert.Equal(DiscoveryDispatchStatus.NoShips, result.Status);
+			Assert.Contains("pathfinders", result.Message);
+		}
+
+		[Fact]
+		public async Task DiscoveryDoesNotCallOGameWhenTheFreshSlotSnapshotLeavesNoSlot() {
+			var settings = SettingsService.GetMergedSettingsFromContents(
+				"{\"General\":{\"SlotsToLeaveFree\":0},\"SleepMode\":{\"Active\":false}}",
+				new List<string> { "{}" });
+			var origin = new Planet {
+				ID = 14,
+				Coordinate = new Coordinate(1, 30, 8, Celestials.Planet)
+			};
+			var destination = new Coordinate(1, 31, 8, Celestials.Planet);
+			var userData = CreateUserData();
+			var parent = CreateParent(settings, userData);
+			var sendCalls = 0;
+			var ogame = Proxy<IOgameService>.Create((method, _) => {
+				if (method.Name == nameof(IOgameService.SendDiscovery)) {
+					Interlocked.Increment(ref sendCalls);
+					return Task.FromResult(true);
+				}
+
+				return Proxy<IOgameService>.Default(method.ReturnType);
+			});
+			var calculation = Proxy<ICalculationService>.Create((method, _) => method.Name switch {
+				nameof(ICalculationService.GetValidSpeedsForClass) => new List<decimal> { Speeds.HundredPercent },
+				nameof(ICalculationService.CalcFleetPrediction) => new FleetPrediction { Time = 60, Fuel = 10 },
+				nameof(ICalculationService.CalcFleetFuelCapacity) => 0L,
+				_ => Proxy<ICalculationService>.Default(method.ReturnType)
+			});
+			var bridge = Proxy<ITBotOgamedBridge>.Create((method, _) => {
+				if (method.Name == nameof(ITBotOgamedBridge.UpdateSlots))
+					return Task.FromResult(new Slots { Total = 1, InUse = 1 });
+				return Proxy<ITBotOgamedBridge>.Default(method.ReturnType);
+			});
+			var scheduler = new FleetScheduler(calculation, ogame);
+			scheduler.SetTBotInstance(parent);
+			scheduler.SetTBotOgameBridge(bridge);
+
+			var result = await scheduler.SendDiscovery(origin, destination);
+
+			Assert.Equal(DiscoveryDispatchStatus.NoSlots, result.Status);
+			Assert.Equal(0, sendCalls);
+		}
+
+		[Fact]
 		public async Task FleetSnapshotFreshnessStaysAttachedToTheMatchingSnapshotWhenRefreshesOverlap() {
 			var settings = SettingsService.GetMergedSettingsFromContents(
 				"{\"General\":{\"SlotsToLeaveFree\":0},\"SleepMode\":{\"Active\":false}}",
@@ -161,6 +291,25 @@ namespace TBot.Tests {
 					Destination = destination,
 					Ships = ships
 				};
+			}
+		}
+
+		private static Task<bool> SendDiscoveryWithConcurrencyProbe(ConcurrencyProbe probe) {
+			var active = Interlocked.Increment(ref probe.ActiveSends);
+			var observedMax = Volatile.Read(ref probe.MaxConcurrentSends);
+			while (active > observedMax) {
+				var previous = Interlocked.CompareExchange(ref probe.MaxConcurrentSends, active, observedMax);
+				if (previous == observedMax)
+					break;
+				observedMax = previous;
+			}
+
+			return CompleteSendAsync();
+
+			async Task<bool> CompleteSendAsync() {
+				await Task.Delay(2);
+				Interlocked.Decrement(ref probe.ActiveSends);
+				return true;
 			}
 		}
 

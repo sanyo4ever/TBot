@@ -1,5 +1,29 @@
 # Changelog
 
+## v3.5.0-beta9
+
+> **Beta warning:** This release contains further OGame v13 discovery and CAPTCHA-flow changes. It is experimental; use **v3.4.9** if you need the known functional fallback.
+
+### Fixed
+
+#### AutoDiscovery
+
+- Stopped reporting the normal in-game redirect returned after a successful OGame v13 discovery dispatch as a false `302` error.
+- Stopped blindly retrying state-changing discovery requests; pending, rejected, unavailable-position and session-expired responses are now handled explicitly.
+- Serialized discovery dispatches with the other fleet workers and revalidated the available fleet slot immediately before sending.
+- Used the discovery page token and accepted only positions that expose an actual lifeform-discovery mission.
+- Kept the origin cursor moving after rejected or unavailable positions without permanently hiding a valid origin.
+
+#### CAPTCHA flow
+
+- Preserved the solved CAPTCHA challenge ID through the next Gameforge login instead of losing it during session establishment.
+- Reused an already loaded challenge instead of starting a second login flow unnecessarily.
+- Made the local image solver deterministic: invalid or unknown challenges now fail clearly instead of selecting a random answer.
+- Propagated CAPTCHA and bridge errors with their actual HTTP status and message.
+
+Build version: **3.5.0.9**
+Release channel: **Beta**
+
 ## v3.5.0-beta8
 
 > **Beta warning:** This release contains a targeted OGame v13 discovery fix. It is still experimental; use **v3.4.9** if you need the known functional fallback.
