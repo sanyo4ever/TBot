@@ -72,6 +72,16 @@ The *settings.json* should be compiled as follows:
 }
 ```
 NB: The settings should be pointing to a path relative to *settings.json* directory.
+
+Discord notifications are configured per instance in *instance_settings.json*:
+```json
+"DiscordWebhook": {
+        "Active": true,
+        "Url": "https://discord.com/api/webhooks/<id>/<token>",
+        "Username": "TBot"
+}
+```
+The webhook receives the same status and action notifications sent by TBot through Telegram. Set `DiscordWebhook.Active` to `false` to disable Discord notifications. `SleepMode.DiscordWebhook.Active` and `Defender.DiscordWebhook.Active` can be set to `false` to disable only those feature notifications. An incoming webhook cannot receive commands, so commands such as `/help` and `/bidauction` remain available through Telegram.
   
 ### Important Notices 
 You must use **different ports** for **each instance** and for **webUI**. They all must be open and free.

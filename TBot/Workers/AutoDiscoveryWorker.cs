@@ -14,6 +14,7 @@ using TBot.Model;
 using TBot.Ogame.Infrastructure;
 using TBot.Ogame.Infrastructure.Enums;
 using TBot.Ogame.Infrastructure.Models;
+using Tbot.Common.Settings;
 
 namespace Tbot.Workers {
 	public class AutoDiscoveryWorker : WorkerBase {
@@ -22,8 +23,14 @@ namespace Tbot.Workers {
 		private readonly ICalculationService _calculationService;
 		private readonly ITBotOgamedBridge _tbotOgameBridge;
 		private readonly AutoDiscoveryCursorStore _cursorStore;
+		private readonly DiscoverySystemCacheStore _systemCacheStore;
+		private readonly ArtifactStorageStateStore _artifactStorageStateStore;
+		private ArtifactStorageState _artifactStorageState;
 
-		private readonly Dictionary<string, DiscoveryCursorState> _originCursors = new();
+		// Discovery positions belong to a galaxy, not to an origin. Keeping one
+		// cursor per galaxy prevents another configured origin from restarting the
+		// same system and generating needless system-view activity.
+		private readonly Dictionary<int, DiscoveryCursorState> _galaxyCursors = new();
 		private int _nextOriginIndex;
 
 		private enum DiscoveryOriginAttemptResult {
@@ -45,10 +52,12 @@ namespace Tbot.Workers {
 			public int Sent;
 			public Dictionary<DiscoveryDispatchStatus, int> Outcomes { get; } = new();
 
-			public void Record(DiscoveryDispatchStatus status) {
-				Outcomes[status] = Outcomes.TryGetValue(status, out var count) ? count + 1 : 1;
+			public void Record(DiscoveryDispatchStatus status, int amount = 1) {
+				if (amount <= 0)
+					return;
+				Outcomes[status] = Outcomes.TryGetValue(status, out var count) ? count + amount : amount;
 				if (status == DiscoveryDispatchStatus.Sent)
-					Sent++;
+					Sent += amount;
 			}
 		}
 
@@ -64,6 +73,9 @@ namespace Tbot.Workers {
 			_tbotOgameBridge = tbotOgameBridge;
 			_cursorStore = new AutoDiscoveryCursorStore(
 				$"autodiscovery_cursors_{_tbotInstance.InstanceAlias}.json");
+			_systemCacheStore = new DiscoverySystemCacheStore(_tbotInstance.InstanceAlias);
+			_artifactStorageStateStore = new ArtifactStorageStateStore(_tbotInstance.InstanceAlias);
+			_artifactStorageState = _artifactStorageStateStore.Load();
 		}
 
 		private sealed class CoordinateComparer : IEqualityComparer<Coordinate> {
@@ -169,36 +181,45 @@ namespace Tbot.Workers {
 			return result;
 		}
 
-		private string OriginKey(Celestial origin) {
-
-			return $"{origin.Coordinate.Galaxy}:{origin.Coordinate.System}:{origin.Coordinate.Position}:{origin.Coordinate.Type}";
-		}
-
 		private DiscoveryCursorState GetOrInitCursor(Celestial origin) {
-			var key = OriginKey(origin);
-			if (!_originCursors.TryGetValue(key, out var cursor) || cursor == null) {
-				cursor = _cursorStore.Load(key, origin.Coordinate.System);
-				_originCursors[key] = cursor;
+			if (origin?.Coordinate == null)
+				return null;
+
+			var galaxy = origin.Coordinate.Galaxy;
+			if (!_galaxyCursors.TryGetValue(galaxy, out var cursor) || cursor == null) {
+				var fallbackSystem = (_tbotInstance.UserData.celestials ?? new List<Celestial>())
+					.Where(celestial => celestial?.Coordinate?.Galaxy == galaxy)
+					.Select(celestial => celestial.Coordinate.System)
+					.DefaultIfEmpty(origin.Coordinate.System)
+					.Min();
+				cursor = _cursorStore.LoadShared(galaxy, fallbackSystem);
+				_galaxyCursors[galaxy] = cursor;
 			}
 
-			int maxSystem = _tbotInstance.UserData.serverData.Systems;
+			var maxSystem = Math.Max(1, _tbotInstance.UserData.serverData?.Systems ?? 1);
 			cursor.Normalize(origin.Coordinate.System, maxSystem);
-
 			return cursor;
+		}
+
+		private void SaveCursor(Celestial origin, DiscoveryCursorState cursor) {
+			if (origin?.Coordinate == null || cursor == null)
+				return;
+			_cursorStore.SaveShared(origin.Coordinate.Galaxy, cursor);
 		}
 
 		private async Task<DiscoveryOriginAttemptResult> ProcessOneSystemForOrigin(
 			Celestial origin,
 			DiscoveryCursorState cursor,
-			DiscoveryRunContext ctx) {
+			DiscoveryRunContext ctx,
+			int systemToDo) {
 
 			if (origin?.Coordinate == null) return DiscoveryOriginAttemptResult.Unavailable;
 			if (ctx.DiscoveriesRemaining <= 0 || ctx.FleetsToSend <= 0 || ctx.Stop)
 				return DiscoveryOriginAttemptResult.Stopped;
 
 			DateTime now = await _tbotOgameBridge.GetDateTime();
-			int systemToDo = cursor.System;
-			int maxSystem = _tbotInstance.UserData.serverData.Systems;
+			int maxSystem = Math.Max(1, _tbotInstance.UserData.serverData?.Systems ?? 1);
+			bool isCursorSystem = cursor.System == systemToDo;
 			List<Coordinate> availableCoordinates;
 			try {
 				availableCoordinates = await _ogameService.GetPositionsAvailableForDiscoveryFleet(origin, new Coordinate {
@@ -217,8 +238,14 @@ namespace Tbot.Workers {
 				(availableCoordinates ?? new List<Coordinate>())
 					.Where(c => c != null && c.Galaxy == origin.Coordinate.Galaxy && c.System == systemToDo && c.Position >= 1 && c.Position <= 15)
 					.Select(c => c.Position));
+			_systemCacheStore.Observe(
+				origin.Coordinate.Galaxy,
+				systemToDo,
+				availablePositions.Where(position => !isCursorSystem || position >= cursor.NextPosition),
+				now);
+
 			var blacklistedPositions = new HashSet<int>();
-			for (int position = cursor.NextPosition; position <= 15; position++) {
+			for (int position = 1; position <= 15; position++) {
 				var positionCoordinate = new Coordinate {
 					Galaxy = origin.Coordinate.Galaxy,
 					System = systemToDo,
@@ -231,22 +258,131 @@ namespace Tbot.Workers {
 
 			var plannedPositions = DiscoverySystemPlanner.SelectAvailablePositions(
 				availablePositions,
-				cursor.NextPosition,
+				isCursorSystem ? cursor.NextPosition : 1,
 				blacklistedPositions,
-				maximum: 1);
+				maximum: 15);
 
 			DoLog(LogLevel.Debug,
 				$"System {origin.Coordinate.Galaxy}:{systemToDo} reports {availablePositions.Count} available discovery positions; planned {plannedPositions.Count}.");
 
 			if (plannedPositions.Count == 0) {
-				cursor.SkipSystem(systemToDo, maxSystem);
-				_cursorStore.Save(OriginKey(origin), cursor);
+				_systemCacheStore.Invalidate(origin.Coordinate.Galaxy, systemToDo);
+				if (isCursorSystem) {
+					cursor.SkipSystem(systemToDo, maxSystem);
+					SaveCursor(origin, cursor);
+				}
 				DoLog(LogLevel.Debug,
 					$"Origin {origin} found no usable discovery position in system {origin.Coordinate.Galaxy}:{systemToDo}; cursor advanced to {cursor.System}:{cursor.NextPosition}.");
 				return DiscoveryOriginAttemptResult.NoCandidate;
 			}
 
-			foreach (int pos in plannedPositions) {
+			int dispatchLimit = Math.Min(ctx.FleetsToSend, ctx.DiscoveriesRemaining);
+			if (dispatchLimit <= 0)
+				return DiscoveryOriginAttemptResult.Stopped;
+
+			// The system endpoint is deliberately used only when the worker's plan is
+			// the complete set returned by the system view. The endpoint has no per-
+			// request limit and therefore must never be used when a blacklisted or
+			// already-passed position could still be returned by OGame.
+			bool canUseSystemDispatch = plannedPositions.Count <= dispatchLimit &&
+				plannedPositions.Count == availablePositions.Count &&
+				availablePositions.All(position => position >= (isCursorSystem ? cursor.NextPosition : 1)) &&
+				availablePositions.All(position => !blacklistedPositions.Contains(position));
+			if (canUseSystemDispatch) {
+				if (++ctx.GlobalAttempts > ctx.MaxGlobalAttempts) {
+					ctx.Stop = true;
+					return DiscoveryOriginAttemptResult.Stopped;
+				}
+
+				DiscoverySystemDispatchResult systemResult;
+				try {
+					// The system endpoint is the normal path: OGame already knows all
+					// free positions in this system, so one request can dispatch the
+					// complete system without touching every origin or position.
+					systemResult = await _fleetScheduler.SendSystemDiscovery(
+						origin, origin.Coordinate.Galaxy, systemToDo, plannedPositions.Count);
+				} catch (Exception e) {
+					systemResult = new DiscoverySystemDispatchResult(
+						DiscoveryDispatchStatus.Failed,
+						message: e.Message);
+				}
+
+				if (systemResult == null) {
+					// A production FleetScheduler always returns a result. Treat a null
+					// result as a hard failure rather than falling back to blind sends.
+					// Blind fallback could duplicate a request whose response was lost.
+					systemResult = new DiscoverySystemDispatchResult(
+						DiscoveryDispatchStatus.Failed,
+						message: "FleetScheduler returned no system-dispatch result");
+				}
+
+				var plannedSet = plannedPositions.ToHashSet();
+				var confirmed = (systemResult.Coordinates ?? Array.Empty<Coordinate>())
+					.Where(c => c != null && c.Galaxy == origin.Coordinate.Galaxy &&
+						c.System == systemToDo && plannedSet.Contains(c.Position))
+					.Select(c => c.Position)
+					.Distinct()
+					.ToList();
+
+				if (systemResult.IsConfirmed && confirmed.Count == 0) {
+					DoLog(LogLevel.Warning,
+						$"Discovery system {origin.Coordinate.Galaxy}:{systemToDo} returned success without confirming a planned position; stopping without advancing the cursor.");
+					ctx.Stop = true;
+					return DiscoveryOriginAttemptResult.Stopped;
+				}
+
+				ctx.Record(systemResult.Status, systemResult.IsConfirmed ? confirmed.Count : 1);
+				if (systemResult.IsConfirmed && confirmed.Count > 0) {
+					if (confirmed.Count != plannedPositions.Count)
+						DoLog(LogLevel.Warning,
+							$"Discovery system {origin.Coordinate.Galaxy}:{systemToDo} confirmed {confirmed.Count}/{plannedPositions.Count} planned positions; leaving the cursor recoverable for the next cycle.");
+
+					foreach (var position in confirmed)
+						UpsertBlacklist(new Coordinate(origin.Coordinate.Galaxy, systemToDo, position, Celestials.Planet), now.AddDays(7));
+
+					// A complete response can advance linearly. A partial response may
+					// contain holes, so only advance through the contiguous confirmed
+					// prefix; otherwise a valid position could be skipped permanently.
+					int contiguous = isCursorSystem ? cursor.NextPosition : 1;
+					while (plannedSet.Contains(contiguous) && confirmed.Contains(contiguous))
+						contiguous++;
+					if (isCursorSystem && contiguous > cursor.NextPosition)
+						cursor.CommitPosition(systemToDo, contiguous - 1, maxSystem);
+					_systemCacheStore.Consume(origin.Coordinate.Galaxy, systemToDo, confirmed);
+					if (isCursorSystem)
+						SaveCursor(origin, cursor);
+					ctx.FleetsToSend -= confirmed.Count;
+					ctx.DiscoveriesRemaining -= confirmed.Count;
+					DoLog(LogLevel.Information,
+						$"Discovery system {origin.Coordinate.Galaxy}:{systemToDo} dispatched {confirmed.Count} fleet(s) from {origin}.");
+					return DiscoveryOriginAttemptResult.Sent;
+				}
+
+				DoLog(systemResult.Status == DiscoveryDispatchStatus.PositionUnavailable
+					? LogLevel.Debug
+					: LogLevel.Warning,
+					$"Discovery system {origin.Coordinate.Galaxy}:{systemToDo} was not sent from {origin}: {systemResult.Status} — {systemResult.Message}.");
+				if (systemResult.Status == DiscoveryDispatchStatus.NoShips)
+					return DiscoveryOriginAttemptResult.NoShips;
+				if (systemResult.Status == DiscoveryDispatchStatus.PositionUnavailable ||
+					systemResult.Status == DiscoveryDispatchStatus.Rejected)
+					_systemCacheStore.Invalidate(origin.Coordinate.Galaxy, systemToDo);
+				if (systemResult.Status == DiscoveryDispatchStatus.PositionUnavailable ||
+					systemResult.Status == DiscoveryDispatchStatus.Rejected)
+					return DiscoveryOriginAttemptResult.PositionUnavailable;
+
+				_systemCacheStore.Invalidate(origin.Coordinate.Galaxy, systemToDo);
+				ctx.Stop = true;
+				return DiscoveryOriginAttemptResult.Stopped;
+			}
+
+			// There are more positions available than this cycle's budget, or the
+			// system endpoint cannot safely be used because its result would not be
+			// limited to the worker's plan. Stay on this system and send positions
+			// one by one until the budget is exhausted.
+			bool sentAny = false;
+			bool positionWasUnavailable = false;
+			foreach (int pos in plannedPositions.Take(dispatchLimit)) {
 				if (ctx.DiscoveriesRemaining <= 0 || ctx.FleetsToSend <= 0 || ctx.Stop)
 					return DiscoveryOriginAttemptResult.Stopped;
 
@@ -264,8 +400,11 @@ namespace Tbot.Workers {
 
 				if (IsBlacklistedAndActive(dest, now)) {
 					ctx.Skips++;
-					cursor.CommitPosition(systemToDo, pos, maxSystem);
-					_cursorStore.Save(OriginKey(origin), cursor);
+					if (isCursorSystem) {
+						cursor.CommitPosition(systemToDo, pos, maxSystem);
+						SaveCursor(origin, cursor);
+					}
+					_systemCacheStore.Consume(origin.Coordinate.Galaxy, systemToDo, new[] { pos });
 					return DiscoveryOriginAttemptResult.NoCandidate;
 				}
 
@@ -284,19 +423,29 @@ namespace Tbot.Workers {
 				// The cursor records that this position was examined, not that it was
 				// accepted. This prevents a failed position from trapping the worker on
 				// the same coordinate while allowing it to be retried on a later pass.
-				cursor.CommitPosition(systemToDo, pos, maxSystem);
-				_cursorStore.Save(OriginKey(origin), cursor);
+				if (isCursorSystem) {
+					cursor.CommitPosition(systemToDo, pos, maxSystem);
+					SaveCursor(origin, cursor);
+				}
 
 				if (dispatchResult.IsConfirmed) {
+					_systemCacheStore.Consume(origin.Coordinate.Galaxy, systemToDo, new[] { pos });
 					DoLog(LogLevel.Information, $"Discovery fleet sent to {dest} from {origin}.");
 					ctx.DiscoveriesRemaining--;
 					ctx.FleetsToSend--;
+					sentAny = true;
 					// Only a confirmed dispatch earns a long cooldown. A rejected or
 					// transiently failed request must not make a valid position disappear
 					// for seven days.
 					UpsertBlacklist(dest, now.AddDays(7));
-					return DiscoveryOriginAttemptResult.Sent;
+					// Keep consuming the positions from this system before the outer
+					// selector is allowed to choose another origin. This is the
+					// system-first policy; the next iteration also re-checks the
+					// remaining budget through the loop guard.
+					continue;
 				} else {
+					if (dispatchResult.Status != DiscoveryDispatchStatus.NoShips)
+						_systemCacheStore.Invalidate(origin.Coordinate.Galaxy, systemToDo);
 					DoLog(dispatchResult.Status == DiscoveryDispatchStatus.PositionUnavailable ||
 						dispatchResult.Status == DiscoveryDispatchStatus.NoShips
 						? LogLevel.Debug
@@ -312,14 +461,66 @@ namespace Tbot.Workers {
 						dispatchResult.Status == DiscoveryDispatchStatus.SessionExpired ||
 						dispatchResult.Status == DiscoveryDispatchStatus.Failed) {
 						ctx.Stop = true;
-						return DiscoveryOriginAttemptResult.Stopped;
+						return sentAny ? DiscoveryOriginAttemptResult.Sent : DiscoveryOriginAttemptResult.Stopped;
 					}
 
-					return DiscoveryOriginAttemptResult.PositionUnavailable;
+					positionWasUnavailable = true;
+					continue;
 				}
 			}
 
-			return DiscoveryOriginAttemptResult.NoCandidate;
+			if (sentAny)
+				return DiscoveryOriginAttemptResult.Sent;
+			return positionWasUnavailable
+				? DiscoveryOriginAttemptResult.PositionUnavailable
+				: DiscoveryOriginAttemptResult.NoCandidate;
+		}
+
+		private DiscoveryOriginSystemPair SelectClosestDiscoveryPair(
+			IReadOnlyList<Celestial> origins,
+			ISet<int> unavailableOrigins,
+			ISet<string> excludedSystems) {
+			if (origins == null || origins.Count == 0)
+				return null;
+
+			int maxSystem = Math.Max(1, _tbotInstance.UserData.serverData?.Systems ?? 1);
+			var originCoordinates = origins
+				.Select((origin, index) => (origin, index))
+				.Where(item => item.origin?.Coordinate != null)
+				.Select(item => (item.origin.Coordinate.Galaxy, item.origin.Coordinate.System))
+				.ToList();
+			if (originCoordinates.Count != origins.Count)
+				return null;
+
+			var cachedSystems = _systemCacheStore.LoadAvailable()
+				.Select(entry => (entry.Galaxy, entry.System))
+				.ToList();
+			var cachedPair = DiscoveryOriginSystemSelectionPolicy.SelectClosest(
+				originCoordinates,
+				cachedSystems,
+				maxSystem,
+				_nextOriginIndex,
+				unavailableOrigins,
+				excludedSystems);
+			if (cachedPair != null)
+				return cachedPair;
+
+			// No indexed system is usable. Probe only one next system per galaxy to
+			// seed the index; the closest origin to that system wins the tie-break.
+			var nextSystems = origins
+				.Select(origin => new { Origin = origin, Cursor = GetOrInitCursor(origin) })
+				.Where(item => item.Origin?.Coordinate != null && item.Cursor != null)
+				.Select(item => (Galaxy: item.Origin.Coordinate.Galaxy, System: item.Cursor.System))
+				.GroupBy(system => (system.Galaxy, system.System))
+				.Select(group => group.Key)
+				.ToList();
+			return DiscoveryOriginSystemSelectionPolicy.SelectClosest(
+				originCoordinates,
+				nextSystems,
+				maxSystem,
+				_nextOriginIndex,
+				unavailableOrigins,
+				excludedSystems);
 		}
 
 
@@ -342,6 +543,69 @@ namespace Tbot.Workers {
 			long interval = backInSec * 1000 + RandomizeHelper.CalcRandomInterval(IntervalType.SomeSeconds);
 			if (interval <= 0) interval = RandomizeHelper.CalcRandomInterval(IntervalType.SomeSeconds);
 			return interval;
+		}
+
+		private bool IsArtifactStorageControlEnabled() {
+			var control = _tbotInstance.InstanceSettings?.AutoDiscovery?.ArtifactStorage;
+			return SettingsService.IsSettingSet(control, "Active") && (bool)control.Active;
+		}
+
+		private async Task<bool> CanSendBecauseOfArtifactStorage(List<Celestial> origins) {
+			if (!IsArtifactStorageControlEnabled())
+				return true;
+
+			var control = _tbotInstance.InstanceSettings.AutoDiscovery.ArtifactStorage;
+			long stopAt = SettingsService.GetSetting(control, "StopAt", 0L);
+			long resumeBelow = SettingsService.GetSetting(control, "ResumeBelow", stopAt);
+			if (stopAt <= 0) {
+				DoLog(LogLevel.Warning, "ArtifactStorage control is enabled but StopAt is not positive; keeping AutoDiscovery enabled.");
+				return true;
+			}
+
+			var inventoryOrigin = (origins ?? new List<Celestial>())
+				.FirstOrDefault(origin => origin?.Coordinate?.Type == Celestials.Planet)
+				?? _tbotInstance.UserData.celestials?.FirstOrDefault(celestial => celestial?.Coordinate?.Type == Celestials.Planet);
+			if (inventoryOrigin == null) {
+				DoLog(LogLevel.Warning, "Unable to check artifact storage: no planet origin is available; pausing AutoDiscovery for safety.");
+				return false;
+			}
+
+			try {
+				var inventory = await _ogameService.GetArtifactInventory(inventoryOrigin);
+				if (inventory == null || inventory.ArtifactsLimit <= 0) {
+					DoLog(LogLevel.Warning,
+						$"Unable to read a valid artifact capacity; keeping the previous AutoDiscovery artifact state ({_artifactStorageState}).");
+					return _artifactStorageState == ArtifactStorageState.Active;
+				}
+
+				var nextState = ArtifactStoragePolicy.NextState(
+					_artifactStorageState,
+					inventory.ArtifactsCollected,
+					stopAt,
+					resumeBelow);
+				if (nextState != _artifactStorageState) {
+					DoLog(LogLevel.Information,
+						$"AutoDiscovery artifact state changed: {_artifactStorageState} -> {nextState} at " +
+						$"{inventory.ArtifactsCollected}/{inventory.ArtifactsLimit} (stop {stopAt}, resume below {resumeBelow}).");
+					_artifactStorageState = nextState;
+					_artifactStorageStateStore.Save(nextState);
+				}
+
+				if (_artifactStorageState == ArtifactStorageState.Paused) {
+					DoLog(LogLevel.Information,
+						$"AutoDiscovery paused: artifact storage is {inventory.ArtifactsCollected}/{inventory.ArtifactsLimit} " +
+						$"(stop threshold {stopAt}, resume at or below {Math.Min(Math.Max(0, resumeBelow), stopAt - 1)}).");
+					return false;
+				}
+
+				DoLog(LogLevel.Debug,
+					$"Artifact storage allows AutoDiscovery: {inventory.ArtifactsCollected}/{inventory.ArtifactsLimit} (resume threshold {resumeBelow}).");
+				return true;
+			} catch (Exception e) {
+				DoLog(LogLevel.Warning,
+					$"Unable to check artifact storage; keeping the previous AutoDiscovery artifact state ({_artifactStorageState}): {e.Message}");
+				return _artifactStorageState == ArtifactStorageState.Active;
+			}
 		}
 
 		protected override async Task Execute() {
@@ -431,6 +695,11 @@ namespace Tbot.Workers {
 					return;
 				}
 
+				if (!await CanSendBecauseOfArtifactStorage(origins)) {
+					delay = true;
+					return;
+				}
+
 				// OGame exposes discovery availability through the planet-scoped endpoint.
 				// The returned count is account-wide, so query it once instead of asking
 				// every configured origin and creating unnecessary activity.
@@ -452,47 +721,51 @@ namespace Tbot.Workers {
 					MaxGlobalAttempts = 600
 				};
 
-				var dispatchPlanner = new DiscoveryDispatchPlanner(origins.Count, _nextOriginIndex);
-				var round = 1;
+				// Discovery positions are account-wide. Use the persisted positive
+				// system index first, then scan one new cursor system only when the
+				// index is empty. Distance is the primary optimization; the cursor is
+				// only a round-robin tie-breaker.
+				var unavailableOrigins = new HashSet<int>();
+				var excludedSystems = new HashSet<string>(StringComparer.Ordinal);
 				while (!ctx.Stop && ctx.FleetsToSend > 0 && ctx.DiscoveriesRemaining > 0) {
-					var originIndex = dispatchPlanner.SelectNextOrigin();
-					if (!originIndex.HasValue) {
-						if (!dispatchPlanner.BeginNextRound()) {
-							DoLog(LogLevel.Information,
-								"AutoDiscovery stopped: no origin could provide another discovery fleet in this cycle.");
-							break;
-						}
+					var pair = SelectClosestDiscoveryPair(origins, unavailableOrigins, excludedSystems);
+					if (pair == null)
+						break;
 
-						round++;
-						DoLog(LogLevel.Debug,
-							$"AutoDiscovery starting origin round {round}; remaining={ctx.FleetsToSend}.");
-						continue;
-					}
-
-					var origin = origins[originIndex.Value];
+					var origin = origins[pair.OriginIndex];
 					if (origin?.Coordinate == null) {
-						dispatchPlanner.MarkUnavailable(originIndex.Value);
+						unavailableOrigins.Add(pair.OriginIndex);
 						continue;
 					}
 
 					var cursor = GetOrInitCursor(origin);
 					DoLog(LogLevel.Information,
-						$"Origin {origin} selected (round={round}, cursor={cursor.System}:{cursor.NextPosition}, remaining={ctx.FleetsToSend}).");
+						$"Origin {origin} selected for nearest system {pair.Galaxy}:{pair.System} (distance={pair.Distance}, cursor position {cursor?.NextPosition ?? 1}, remaining={ctx.FleetsToSend}).");
 
-					var attempt = await ProcessOneSystemForOrigin(origin, cursor, ctx);
+					var attempt = await ProcessOneSystemForOrigin(origin, cursor, ctx, pair.System);
+					var systemKey = $"{pair.Galaxy}:{pair.System}";
 					switch (attempt) {
 						case DiscoveryOriginAttemptResult.Sent:
-							dispatchPlanner.MarkSent(originIndex.Value);
-							_nextOriginIndex = (originIndex.Value + 1) % origins.Count;
+							_nextOriginIndex = (pair.OriginIndex + 1) % origins.Count;
+							excludedSystems.Remove(systemKey);
 							break;
 						case DiscoveryOriginAttemptResult.NoShips:
 						case DiscoveryOriginAttemptResult.Unavailable:
-							dispatchPlanner.MarkUnavailable(originIndex.Value);
+							unavailableOrigins.Add(pair.OriginIndex);
+							// A ship shortage belongs to this origin, not to the
+							// system. Another origin may still dispatch the cached
+							// positions in the same cycle.
+							if (attempt == DiscoveryOriginAttemptResult.Unavailable)
+								excludedSystems.Add(systemKey);
 							DoLog(LogLevel.Information,
 								$"Origin {origin} skipped for the remainder of this AutoDiscovery cycle: {attempt}.");
 							break;
+						case DiscoveryOriginAttemptResult.NoCandidate:
 						case DiscoveryOriginAttemptResult.PositionUnavailable:
-							dispatchPlanner.MarkPositionUnavailable(originIndex.Value);
+							excludedSystems.Add(systemKey);
+							break;
+						case DiscoveryOriginAttemptResult.Stopped:
+							ctx.Stop = true;
 							break;
 					}
 				}

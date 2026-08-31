@@ -35,6 +35,10 @@ namespace TBot.Model {
 			}
 		}
 
+		public DiscoveryCursorState LoadShared(int galaxy, int fallbackSystem) {
+			return Load($"shared:{galaxy}", fallbackSystem);
+		}
+
 		public void Save(string key, DiscoveryCursorState cursor) {
 			if (string.IsNullOrWhiteSpace(key) || cursor == null)
 				return;
@@ -46,6 +50,10 @@ namespace TBot.Model {
 				};
 				Persist();
 			}
+		}
+
+		public void SaveShared(int galaxy, DiscoveryCursorState cursor) {
+			Save($"shared:{galaxy}", cursor);
 		}
 
 		private void Load() {

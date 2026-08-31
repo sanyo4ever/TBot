@@ -511,6 +511,69 @@ if (fleet == null) return;
 			}
 		}
 
+		/// <summary>
+		/// Sends all currently eligible discoveries in one system. The expected count
+		/// is supplied by the worker's immediately preceding system view so the
+		/// multi-send endpoint cannot consume more slots than this cycle reserved.
+		/// </summary>
+		public async Task<DiscoverySystemDispatchResult> SendSystemDiscovery(
+			Celestial origin,
+			int galaxy,
+			int system,
+			int expectedFleetCount) {
+			await _dispatchSemaphore.WaitAsync();
+			try {
+				if (origin?.Coordinate == null || galaxy <= 0 || system <= 0 || expectedFleetCount <= 0)
+					return new DiscoverySystemDispatchResult(
+						DiscoveryDispatchStatus.Failed,
+						message: "origin, system or expected fleet count is invalid");
+
+				try {
+					_tbotInstance.UserData.slots = await _tbotOgameBridge.UpdateSlots();
+					int slotsToLeaveFree = (int)_tbotInstance.InstanceSettings.General.SlotsToLeaveFree;
+					int usableSlots = Math.Max(0, (_tbotInstance.UserData.slots?.Free ?? 0) - slotsToLeaveFree);
+					if (usableSlots < expectedFleetCount) {
+						var result = new DiscoverySystemDispatchResult(
+							DiscoveryDispatchStatus.NoSlots,
+							message: $"only {usableSlots} fleet slot(s) are available for {expectedFleetCount} system discoveries");
+						_tbotInstance.log(LogLevel.Information, LogSender.FleetScheduler,
+							$"System discovery not sent from {origin.Coordinate}: {result.Message}.");
+						return result;
+					}
+
+					var coordinates = await _ogameService.SendSystemDiscovery(origin, galaxy, system);
+					if (coordinates == null || coordinates.Count == 0) {
+						var result = new DiscoverySystemDispatchResult(
+							DiscoveryDispatchStatus.Rejected,
+							message: "OGame returned no confirmed system discovery fleet");
+						_tbotInstance.log(LogLevel.Warning, LogSender.FleetScheduler,
+							$"System discovery rejected from {origin.Coordinate} for {galaxy}:{system}: {result.Message}.");
+						return result;
+					}
+
+					try {
+						_tbotInstance.UserData.slots = await _tbotOgameBridge.UpdateSlots();
+					} catch (Exception refreshException) {
+						_tbotInstance.log(LogLevel.Debug, LogSender.FleetScheduler,
+							$"System discovery was accepted, but slot refresh failed: {refreshException.Message}");
+					}
+
+					return new DiscoverySystemDispatchResult(
+						DiscoveryDispatchStatus.Sent,
+						coordinates,
+						$"{coordinates.Count} discovery fleet(s) accepted by OGame");
+				} catch (Exception e) {
+					_tbotInstance.log(LogLevel.Warning, LogSender.FleetScheduler,
+						$"Unable to send system discovery from {origin.Coordinate} to {galaxy}:{system}: {e.Message}");
+					return new DiscoverySystemDispatchResult(
+						ClassifyDiscoveryDispatchException(e).Status,
+						message: e.GetBaseException()?.Message ?? e.Message);
+				}
+			} finally {
+				_dispatchSemaphore.Release();
+			}
+		}
+
 		private static DiscoveryDispatchResult ClassifyDiscoveryDispatchException(Exception exception) {
 			var message = exception?.GetBaseException()?.Message?.Trim();
 			if (string.IsNullOrWhiteSpace(message))
@@ -830,9 +893,9 @@ if (fleet == null) return;
 								DisposeAndRemoveTimer($"RecallTimer-{fleet.ID.ToString()}");
                                 AddTimer($"RecallTimer-{fleet.ID.ToString()}", new Timer(RetireFleet, fleet, (int)newRecallDelay, Timeout.Infinite));
 
-								if ((bool) _tbotInstance.InstanceSettings.Defender.TelegramMessenger.Active) {
-									await _tbotInstance.SendTelegramMessage($"⚠️ Recall delayed! Attack still incoming on {fleet.Origin}. New recall in {newRecallDelay/1000}s");
-								}
+								await _tbotInstance.SendFeatureNotification(_tbotInstance.InstanceSettings.Defender,
+									$"⚠️ Recall delayed! Attack still incoming on {fleet.Origin}. New recall in {newRecallDelay/1000}s",
+									NotificationKind.Warning);
 								return;
 							} else {
 								_tbotInstance.log(LogLevel.Information, LogSender.FleetScheduler, $"[RECALL-OK] Fleet {fleet.ID} return time ({estimatedReturnSeconds}s) is AFTER last attack ({lastAttack.ArriveIn}s) - proceeding with recall");
@@ -858,9 +921,9 @@ if (fleet == null) return;
 					_tbotInstance.log(LogLevel.Error, LogSender.FleetScheduler, "Unable to recall fleet: an unknon error has occurred, already recalled ?.");
 				} else {
 					_tbotInstance.log(LogLevel.Information, LogSender.FleetScheduler, $"Fleet recalled. Arrival time: {recalledFleet.BackTime.ToString()}");
-					if ((bool) _tbotInstance.InstanceSettings.Defender.TelegramMessenger.Active) {
-						await _tbotInstance.SendTelegramMessage($"Fleet recalled. Arrival time: {recalledFleet.BackTime.ToString()}");
-					}
+					await _tbotInstance.SendFeatureNotification(_tbotInstance.InstanceSettings.Defender,
+						$"Fleet recalled. Arrival time: {recalledFleet.BackTime.ToString()}",
+						NotificationKind.Success);
 					return;
 				}
 			} catch (Exception e) {

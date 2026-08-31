@@ -46,6 +46,11 @@
 			"AutoHarvest": 99
 		}
 	},
+	"DiscordWebhook": {
+		"Active": false,
+		"Url": "",
+		"Username": "TBot"
+	},
 	"SleepMode": {
 		"Active": false,
 		"GoToSleep": "23:15",
@@ -53,6 +58,9 @@
 		"PreventIfThereAreFleets": true,
 		"TelegramMessenger": {
 			"Active": false
+		},
+		"DiscordWebhook": {
+			"Active": true
 		},
 		"AutoFleetSave": {
 			"Active": true,
@@ -108,6 +116,9 @@
 		},
 		"TelegramMessenger": {
 			"Active": false
+		},
+		"DiscordWebhook": {
+			"Active": true
 		},
 		"Alarm": {
 			"Active": true
@@ -452,6 +463,13 @@
 		],
 		"KeepReportFor": 1440,
 		"KeepReportsWithDefense": true,
+		"AttackDefendedTargets": false,
+		"AttackTargetsWithFleet": false,
+		"IgnoreMissiles": true,
+		"BombersPer100kDefense": 4,
+		"ReapersPer100kFleet": 2,
+		"MaxDefensePoints": 0,
+		"MaxFleetPoints": 0,
 		"NumProbes": 52,
 		"Origin": [
 			{
@@ -555,6 +573,11 @@
 		"MaxSlots": 5,
 		"MaxFailures": 5,
 		"RandomizeDestination": false,
+		"ArtifactStorage": {
+			"Active": false,
+			"StopAt": 3600,
+			"ResumeBelow": 3000
+		},
 		"CheckIntervalMin": 30,
 		"CheckIntervalMax": 60
 	}

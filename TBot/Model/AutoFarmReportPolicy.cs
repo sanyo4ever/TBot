@@ -5,6 +5,17 @@ using TBot.Ogame.Infrastructure.Enums;
 using TBot.Ogame.Infrastructure.Models;
 
 namespace TBot.Model {
+	public enum AutoFarmReportDecisionKind {
+		NeedMoreInformation,
+		AttackPending,
+		NotSuitable
+	}
+
+	public sealed record AutoFarmReportDecision(
+		AutoFarmReportDecisionKind Kind,
+		string Reason,
+		BlacklistReason? BlacklistReason = null);
+
 	/// <summary>
 	/// Keeps report-list traversal independent from report deletion. Reports are
 	/// returned newest first, so the first report already known to AutoFarm is the
@@ -23,7 +34,55 @@ namespace TBot.Model {
 		public static bool ShouldPreserveForManualReview(
 			EspionageReport report,
 			bool keepReportsWithDefense) {
-			return keepReportsWithDefense && report?.HasDefensiveStructures() == true;
+			return ShouldPreserveForManualReview(report, keepReportsWithDefense, false);
+		}
+
+		public static bool ShouldPreserveForManualReview(
+			EspionageReport report,
+			bool keepReportsWithDefense,
+			bool ignoreMissiles) {
+			return keepReportsWithDefense && report?.HasDefensiveStructures(!ignoreMissiles) == true;
+		}
+
+		public static AutoFarmReportDecision Evaluate(
+			EspionageReport report,
+			long minimumResources,
+			string preferredResource,
+			CharacterClass playerClass,
+			bool attackDefendedTargets,
+			bool attackTargetsWithFleet,
+			bool ignoreMissiles,
+			long maxDefensePoints,
+			long maxFleetPoints) {
+			if (report == null)
+				return new(AutoFarmReportDecisionKind.NotSuitable, "MissingReport");
+
+			var loot = report.Loot(playerClass);
+			var meetsMinimum = preferredResource switch {
+				"Metal" => loot.Metal > minimumResources,
+				"Crystal" => loot.Crystal > minimumResources,
+				"Deuterium" => loot.Deuterium > minimumResources,
+				_ => loot.TotalResources > minimumResources
+			};
+			if (!meetsMinimum)
+				return new(AutoFarmReportDecisionKind.NotSuitable, "InsufficientResources", BlacklistReason.LowResources);
+
+			if (!report.HasFleetInformation || !report.HasDefensesInformation)
+				return new(AutoFarmReportDecisionKind.NeedMoreInformation, "MoreProbeInformationRequired");
+
+			var defensePoints = report.GetDefensePoints(!ignoreMissiles);
+			if (defensePoints > 0 && (!attackDefendedTargets || maxDefensePoints > 0 && defensePoints > maxDefensePoints))
+				return new(AutoFarmReportDecisionKind.NotSuitable,
+					maxDefensePoints > 0 && defensePoints > maxDefensePoints ? "DefenseLimitExceeded" : "DefensesPresent",
+					BlacklistReason.HasDefense);
+
+			var fleetPoints = report.GetFleetPoints();
+			if (fleetPoints > 0 && (!attackTargetsWithFleet || maxFleetPoints > 0 && fleetPoints > maxFleetPoints))
+				return new(AutoFarmReportDecisionKind.NotSuitable,
+					maxFleetPoints > 0 && fleetPoints > maxFleetPoints ? "FleetLimitExceeded" : "FleetPresent",
+					BlacklistReason.HasFleet);
+
+			return new(AutoFarmReportDecisionKind.AttackPending, "AttackPending");
 		}
 
 		public static bool IsManualReviewDefense(string outcome) {

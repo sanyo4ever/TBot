@@ -1,5 +1,48 @@
 # Changelog
 
+## v3.5.1-beta1
+
+> **Beta warning:** This release changes the AutoDiscovery dispatch workflow and adds Discord notifications and Auction improvements. It is experimental; edge-case bugs may still remain. Use **v3.4.9** if you need the known functional fallback.
+
+### Added
+
+#### AutoDiscovery
+
+- Added system-first dispatch: AutoDiscovery selects the nearest eligible Origin/system pair and fills that system before moving to the next one. Round-robin is used only to break distance ties.
+- Added persistent per-galaxy cursors and a system availability cache so discovery progress survives restarts without repeatedly rescanning the same systems.
+- Added optional artifact-storage thresholds (`Active`, `StopAt`, `ResumeBelow`) to pause and resume discoveries automatically.
+
+#### AutoFarm
+
+- Added optional handling of targets with defenses or fleets, including configurable defense/fleet point limits, bomber/reaper escort ratios and missile ignoring.
+
+#### Discord notifications
+
+- Added optional Discord webhook notifications configured per instance.
+- Added global and feature-level switches for Discord notifications, including Defender and SleepMode.
+- Added Discord embeds with event-specific colors, timestamps and a TBot footer.
+
+### Changed
+
+#### AutoDiscovery
+
+- Discovery positions, fleet availability and fleet slots are revalidated immediately before dispatch. Dispatches are serialized through FleetScheduler, and rejected or partial results invalidate only the affected cached state.
+- A system-level dispatch is used only when the complete set of currently eligible positions can be sent safely; otherwise positions are sent individually while keeping the system-first order.
+
+#### AutoFarm
+
+- Report processing now tracks report ownership and consumption explicitly, preserves reports intended for manual review, and continues processing eligible reports after a scan completes.
+- Transient galaxy-scan failures no longer restart OGameD from inside the AutoFarm worker.
+
+### Fixed
+
+#### Auction
+
+- Fixed the Telegram minimum-bid flow so it uses the current auction resources and multipliers, selects a celestial that can actually cover the bid, and rejects incomplete or invalid auction data cleanly.
+
+Build version: **3.5.1.1**
+Release channel: **Beta**
+
 ## v3.5.0-beta9
 
 > **Beta warning:** This release contains further OGame v13 discovery and CAPTCHA-flow changes. It is experimental; use **v3.4.9** if you need the known functional fallback.

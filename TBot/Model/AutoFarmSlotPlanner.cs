@@ -19,9 +19,11 @@ namespace TBot.Model {
 			int slotsToLeaveFree,
 			IEnumerable<Fleet> fleets,
 			Buildables cargoType,
-			ISet<int> ownedEspionageFleetIds = null) {
+			ISet<int> ownedEspionageFleetIds = null,
+			bool allowBombers = false,
+			bool allowReapers = false) {
 			var ownedSlots = (fleets ?? Enumerable.Empty<Fleet>())
-				.Count(fleet => IsOwnedFleet(fleet, cargoType, ownedEspionageFleetIds));
+				.Count(fleet => IsOwnedFleet(fleet, cargoType, ownedEspionageFleetIds, allowBombers, allowReapers));
 
 			var availableByWorker = Math.Max(0, maxSlots - ownedSlots);
 			var availableGlobally = Math.Max(0, totalFreeSlots - slotsToLeaveFree);
@@ -33,10 +35,19 @@ namespace TBot.Model {
 		}
 
 		public static bool IsOwnedFleet(Fleet fleet, Buildables cargoType) {
-			return IsOwnedFleet(fleet, cargoType, null);
+			return IsOwnedFleet(fleet, cargoType, null, false, false);
 		}
 
 		public static bool IsOwnedFleet(Fleet fleet, Buildables cargoType, ISet<int> ownedEspionageFleetIds) {
+			return IsOwnedFleet(fleet, cargoType, ownedEspionageFleetIds, false, false);
+		}
+
+		public static bool IsOwnedFleet(
+			Fleet fleet,
+			Buildables cargoType,
+			ISet<int> ownedEspionageFleetIds,
+			bool allowBombers,
+			bool allowReapers) {
 			if (fleet?.Ships == null)
 				return false;
 
@@ -44,18 +55,25 @@ namespace TBot.Model {
 				return fleet.Ships.IsOnlyProbes() &&
 					(ownedEspionageFleetIds == null || ownedEspionageFleetIds.Contains(fleet.ID));
 
-			return fleet.Mission == Missions.Attack && IsOnlyShip(fleet.Ships, cargoType);
+			return fleet.Mission == Missions.Attack && IsOnlyConfiguredAttackFleet(
+				fleet.Ships, cargoType, allowBombers, allowReapers);
 		}
 
-		private static bool IsOnlyShip(Ships ships, Buildables shipType) {
-			if (shipType == Buildables.Null || ships.GetAmount(shipType) <= 0)
+		private static bool IsOnlyConfiguredAttackFleet(
+			Ships ships,
+			Buildables cargoType,
+			bool allowBombers,
+			bool allowReapers) {
+			if (cargoType == Buildables.Null || ships.GetAmount(cargoType) <= 0)
 				return false;
 
 			return typeof(Ships)
 				.GetProperties(BindingFlags.Instance | BindingFlags.Public)
 				.Where(property => property.PropertyType == typeof(long))
-				.Where(property => !string.Equals(property.Name, shipType.ToString(), StringComparison.Ordinal))
-				.All(property => (long)property.GetValue(ships) == 0);
+				.Where(property => (long)property.GetValue(ships) > 0)
+				.All(property => string.Equals(property.Name, cargoType.ToString(), StringComparison.Ordinal)
+					|| allowBombers && string.Equals(property.Name, nameof(Buildables.Bomber), StringComparison.Ordinal)
+					|| allowReapers && string.Equals(property.Name, nameof(Buildables.Reaper), StringComparison.Ordinal));
 		}
 	}
 }

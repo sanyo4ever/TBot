@@ -10,6 +10,17 @@ using Xunit;
 namespace TBot.Tests {
 	public class WorkerInvariantTests {
 		[Fact]
+		public void DiscoverySelectionUsesOneSharedSystemAndChoosesTheNearestOrigin() {
+			var origins = new[] { 10, 80, 250 };
+
+			Assert.Equal(1, DiscoveryOriginSelectionPolicy.SelectClosest(origins, 75, 499, 0));
+			Assert.Equal(0, DiscoveryOriginSelectionPolicy.SelectClosest(origins, 12, 499, 0));
+			Assert.Equal(2, DiscoveryOriginSelectionPolicy.SelectClosest(origins, 250, 499, 0));
+			Assert.Equal(2, DiscoveryOriginSelectionPolicy.SelectClosest(
+				origins, 10, 499, 0, new HashSet<int> { 0, 1 }));
+		}
+
+		[Fact]
 		public void ExpeditionPlannerRemainsFairForManyOrdersAndTwoCompleteRounds() {
 			for (int seed = 0; seed < 100; seed++) {
 				const int originCount = 13;

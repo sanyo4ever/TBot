@@ -1059,6 +1059,16 @@ namespace TBot.Ogame.Infrastructure {
 			return await PostAsyncNoRetry<bool>($"/bot/planets/{origin.ID}/send-discovery", parameters.ToArray());
 		}
 
+		public async Task<List<Coordinate>> SendSystemDiscovery(Celestial origin, int galaxy, int system) {
+			if (origin?.ID <= 0)
+				throw new ArgumentException("A valid discovery origin is required.", nameof(origin));
+
+			return await PostAsyncNoRetry<List<Coordinate>>(
+				$"/bot/planets/{origin.ID}/send-system-discovery",
+				new KeyValuePair<string, string>("galaxy", galaxy.ToString()),
+				new KeyValuePair<string, string>("system", system.ToString()));
+		}
+
 		        public async Task<List<Coordinate>> GetPositionsAvailableForDiscoveryFleet(Celestial celestial, Coordinate coordinate) {
             List<KeyValuePair<string, string>> parameters = new List<KeyValuePair<string, string>>();
             parameters.Add(new KeyValuePair<string, string>("galaxy", coordinate.Galaxy.ToString()));

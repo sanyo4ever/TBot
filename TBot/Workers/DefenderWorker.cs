@@ -191,9 +191,9 @@ namespace Tbot.Workers {
 
 			try {
 				if (attack.MissionType == Missions.MissileAttack) {
-					if ((bool) _tbotInstance.InstanceSettings.Defender.TelegramMessenger.Active) {
-						await _tbotInstance.SendTelegramMessage($"Player {attack.AttackerName} ({attack.AttackerID}) is attacking your planet {attack.Destination.ToString()} with IPM!");
-					}
+					await _tbotInstance.SendFeatureNotification(_tbotInstance.InstanceSettings.Defender,
+						$"Player {attack.AttackerName} ({attack.AttackerID}) is attacking your planet {attack.Destination.ToString()} with IPM!",
+						NotificationKind.MissileAttack);
 					DoLog(LogLevel.Information, $"Player {attack.AttackerName} ({attack.AttackerID}) is attacking your planet {attack.Destination.ToString()} with IPM!");
 					if (
 						!SettingsService.IsSettingSet(_tbotInstance.InstanceSettings.Defender, "DefendFromMissiles") ||
@@ -272,12 +272,14 @@ namespace Tbot.Workers {
 				DoLog(LogLevel.Warning, "An error has occurred while checking attacker fleet composition");
 			}
 
-			if ((bool) _tbotInstance.InstanceSettings.Defender.TelegramMessenger.Active) {
-				await _tbotInstance.SendTelegramMessage($"Player {attack.AttackerName} ({attack.AttackerID}) is attacking your planet {attack.Destination.ToString()} arriving at {attack.ArrivalTime.ToString()}");
-				if (attack.Ships != null) { 
-					await Task.Delay(1000, _ct);
-					await _tbotInstance.SendTelegramMessage($"The attack is composed by: {attack.Ships.ToString()}");
-				}
+			await _tbotInstance.SendFeatureNotification(_tbotInstance.InstanceSettings.Defender,
+				$"Player {attack.AttackerName} ({attack.AttackerID}) is attacking your planet {attack.Destination.ToString()} arriving at {attack.ArrivalTime.ToString()}",
+				NotificationKind.Attack);
+			if (attack.Ships != null) {
+				await Task.Delay(1000, _ct);
+				await _tbotInstance.SendFeatureNotification(_tbotInstance.InstanceSettings.Defender,
+					$"The attack is composed by: {attack.Ships.ToString()}",
+					NotificationKind.Attack);
 			}
 			DoLog(LogLevel.Warning, $"Player {attack.AttackerName} ({attack.AttackerID}) is attacking your planet {attackedCelestial.ToString()} arriving at {attack.ArrivalTime.ToString()}");
 			if (attack.Ships != null) {

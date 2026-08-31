@@ -225,6 +225,53 @@ namespace TBot.Tests {
 		}
 
 		[Fact]
+		public void DiscoverySelectsTheNearestOriginSystemPairBeforeRoundRobinTieBreak() {
+			var pair = DiscoveryOriginSystemSelectionPolicy.SelectClosest(
+				new[] { (1, 100), (1, 400) },
+				new[] { (1, 95), (1, 390) },
+				499,
+				roundRobinStartIndex: 1);
+
+			Assert.NotNull(pair);
+			Assert.Equal(0, pair.OriginIndex);
+			Assert.Equal(95, pair.System);
+			Assert.Equal(5, pair.Distance);
+		}
+
+		[Fact]
+		public void DiscoveryUsesRoundRobinOnlyWhenOriginSystemDistanceIsEqual() {
+			var pair = DiscoveryOriginSystemSelectionPolicy.SelectClosest(
+				new[] { (1, 100), (1, 200) },
+				new[] { (1, 150) },
+				499,
+				roundRobinStartIndex: 1);
+
+			Assert.NotNull(pair);
+			Assert.Equal(1, pair.OriginIndex);
+			Assert.Equal(50, pair.Distance);
+		}
+
+		[Fact]
+		public void DiscoverySystemCacheRemovesConsumedPositionsAndInvalidatesARejectedSystem() {
+			var alias = $"discovery-cache-{Guid.NewGuid():N}";
+			var cachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", $"autodiscovery_systems_{alias}.json");
+			try {
+				var cache = new DiscoverySystemCacheStore(alias);
+				cache.Observe(1, 95, new[] { 1, 2, 3 }, DateTime.UtcNow);
+				cache.Consume(1, 95, new[] { 1, 2 });
+
+				var remaining = Assert.Single(cache.LoadAvailable());
+				Assert.Equal(new[] { 3 }, remaining.AvailablePositions);
+
+				cache.Invalidate(1, 95);
+				Assert.Empty(cache.LoadAvailable());
+			} finally {
+				if (File.Exists(cachePath))
+					File.Delete(cachePath);
+			}
+		}
+
+		[Fact]
 		public void OrderedWorkerScheduleNeverReversesThePlannedOrder() {
 			var first = OrderedWorkerSchedule.NextDueTime(TimeSpan.Zero, TimeSpan.FromSeconds(2));
 			var second = OrderedWorkerSchedule.NextDueTime(first, TimeSpan.FromSeconds(5));
@@ -792,6 +839,36 @@ namespace TBot.Tests {
 				Buildables.LargeCargo);
 
 			Assert.Equal(0, budget.OwnedSlots);
+			Assert.Equal(1, budget.AvailableSlots);
+		}
+
+		[Fact]
+		public void AutoFarmSlotBudgetCountsItsConfiguredEscortFleets() {
+			var fleets = new[] {
+				new Fleet {
+					Mission = Missions.Attack,
+					Ships = new Ships(largeCargo: 25, bomber: 4)
+				},
+				new Fleet {
+					Mission = Missions.Attack,
+					Ships = new Ships(largeCargo: 25, reaper: 2)
+				},
+				new Fleet {
+					Mission = Missions.Attack,
+					Ships = new Ships(largeCargo: 25, cruiser: 1)
+				}
+			};
+
+			var budget = AutoFarmSlotPlanner.Calculate(
+				maxSlots: 3,
+				totalFreeSlots: 10,
+				slotsToLeaveFree: 0,
+				fleets,
+				Buildables.LargeCargo,
+				allowBombers: true,
+				allowReapers: true);
+
+			Assert.Equal(2, budget.OwnedSlots);
 			Assert.Equal(1, budget.AvailableSlots);
 		}
 

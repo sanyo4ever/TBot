@@ -284,6 +284,49 @@ namespace Tbot.Workers {
 	}
 
 	/// <summary>
+	/// Selects the closest configured origin for one shared discovery-system cursor.
+	/// Discovery positions are account-wide, so origins must not carry independent
+	/// target progress for the same galaxy.
+	/// </summary>
+	public static class DiscoveryOriginSelectionPolicy {
+		public static int? SelectClosest(
+			IReadOnlyList<int> originSystems,
+			int targetSystem,
+			int maxSystem,
+			int tieBreakStartIndex = 0,
+			ISet<int> excludedOrigins = null) {
+			if (originSystems == null || originSystems.Count == 0 || maxSystem <= 0)
+				return null;
+
+			var normalizedTarget = NormalizeSystem(targetSystem, maxSystem);
+			var normalizedStart = ((tieBreakStartIndex % originSystems.Count) + originSystems.Count) % originSystems.Count;
+			return originSystems
+				.Select((system, index) => new { system, index })
+				.Where(item => excludedOrigins == null || !excludedOrigins.Contains(item.index))
+				.Select(item => new {
+					item.index,
+					distance = CircularDistance(NormalizeSystem(item.system, maxSystem), normalizedTarget, maxSystem),
+					tieBreak = (item.index - normalizedStart + originSystems.Count) % originSystems.Count
+				})
+				.OrderBy(item => item.distance)
+				.ThenBy(item => item.tieBreak)
+				.Select(item => (int?)item.index)
+				.FirstOrDefault();
+		}
+
+		private static int NormalizeSystem(int system, int maxSystem) {
+			if (system < 1)
+				return 1;
+			return ((system - 1) % maxSystem) + 1;
+		}
+
+		private static int CircularDistance(int first, int second, int maxSystem) {
+			var direct = Math.Abs(first - second);
+			return Math.Min(direct, maxSystem - direct);
+		}
+	}
+
+	/// <summary>
 	/// Cursor for one discovery origin. Every examined position must be committed,
 	/// including blacklisted and rejected positions; otherwise the worker can loop
 	/// forever on the last position of a system.

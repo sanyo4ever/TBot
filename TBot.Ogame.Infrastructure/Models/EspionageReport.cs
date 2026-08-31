@@ -136,13 +136,52 @@ namespace TBot.Ogame.Infrastructure.Models {
 		/// is specifically about keeping reports with planetary defences.
 		/// </summary>
 		public bool HasDefensiveStructures() {
+			return HasDefensiveStructures(true);
+		}
+
+		public bool HasDefensiveStructures(bool includeMissiles) {
 			if (!HasDefensesInformation)
 				return false;
 
-			return HasShipOrDefence(
+			var hasStructures = HasShipOrDefence(
 				RocketLauncher, LightLaser, HeavyLaser, GaussCannon, IonCannon,
-				PlasmaTurret, SmallShieldDome, LargeShieldDome,
-				AntiBallisticMissiles, InterplanetaryMissiles);
+				PlasmaTurret, SmallShieldDome, LargeShieldDome);
+			return includeMissiles
+				? hasStructures || HasShipOrDefence(AntiBallisticMissiles, InterplanetaryMissiles)
+				: hasStructures;
+		}
+
+		public long GetDefensePoints(bool includeMissiles = true) {
+			return new Defences(
+				RocketLauncher.GetValueOrDefault(),
+				LightLaser.GetValueOrDefault(),
+				HeavyLaser.GetValueOrDefault(),
+				GaussCannon.GetValueOrDefault(),
+				IonCannon.GetValueOrDefault(),
+				PlasmaTurret.GetValueOrDefault(),
+				SmallShieldDome.GetValueOrDefault(),
+				LargeShieldDome.GetValueOrDefault(),
+				includeMissiles ? AntiBallisticMissiles.GetValueOrDefault() : 0,
+				includeMissiles ? InterplanetaryMissiles.GetValueOrDefault() : 0).GetDefencePoints();
+		}
+
+		public long GetFleetPoints() {
+			return new Ships(
+				lightFighter: LightFighter.GetValueOrDefault(),
+				heavyFighter: HeavyFighter.GetValueOrDefault(),
+				cruiser: Cruiser.GetValueOrDefault(),
+				battleship: Battleship.GetValueOrDefault(),
+				battlecruiser: Battlecruiser.GetValueOrDefault(),
+				bomber: Bomber.GetValueOrDefault(),
+				destroyer: Destroyer.GetValueOrDefault(),
+				deathstar: Deathstar.GetValueOrDefault(),
+				smallCargo: SmallCargo.GetValueOrDefault(),
+				largeCargo: LargeCargo.GetValueOrDefault(),
+				colonyShip: ColonyShip.GetValueOrDefault(),
+				recycler: Recycler.GetValueOrDefault(),
+				espionageProbe: EspionageProbe.GetValueOrDefault(),
+				reaper: Reaper.GetValueOrDefault(),
+				pathfinder: Pathfinder.GetValueOrDefault()).GetFleetPoints();
 		}
 
 		private static bool HasShipOrDefence(params long?[] amounts) {

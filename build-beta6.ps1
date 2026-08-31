@@ -65,6 +65,8 @@ foreach ($platform in $platforms) {
 
 	Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') `
 		-Destination (Join-Path $packageRoot 'README.md') -Force
+	Copy-Item -LiteralPath (Join-Path $repoRoot 'CHANGELOG.md') `
+		-Destination (Join-Path $packageRoot 'CHANGELOG.md') -Force
 	$null = Get-Content -LiteralPath (Join-Path $packageRoot 'settings.json') -Raw | ConvertFrom-Json
 	$instanceSettings = Get-Content -LiteralPath (Join-Path $packageRoot 'instance_settings.json') -Raw | ConvertFrom-Json
 	if ($null -eq $instanceSettings.Brain.AutoFleetJumpGate.Target -or

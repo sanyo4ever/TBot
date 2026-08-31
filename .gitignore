@@ -345,3 +345,11 @@ healthchecksdb
 
 # Runtime data created by AutoFarm and other workers
 data/
+
+# Local test and release outputs. These folders may contain copied instance
+# settings or session data and must never be committed.
+/artifacts-e2e-*/
+/e2e-*/
+/live-*/
+/build-*/
+/release-build-*/
