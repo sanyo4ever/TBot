@@ -183,6 +183,29 @@ namespace TBot.Tests {
 		}
 
 		[Fact]
+		public void AutoFarmProbeCargoValidationUsesServerProbeCapacity() {
+			const long probeCount = 537351;
+			const long reportedLoot = 4396503;
+			var serverData = new ServerData {
+				CargoHyperspaceTechMultiplier = 0,
+				ProbeCargo = 10
+			};
+			var fleet = new Ships(espionageProbe: probeCount);
+			var calculation = new Tbot.Includes.CalculationService(null, null);
+
+			var capacity = calculation.CalcFleetCapacity(
+				fleet,
+				serverData,
+				hyperspaceTech: 0,
+				lfBonuses: new LFBonuses(),
+				playerClass: CharacterClass.NoClass,
+				probeCargo: serverData.ProbeCargo);
+
+			Assert.Equal(probeCount * 9, capacity);
+			Assert.True(capacity >= reportedLoot);
+		}
+
+		[Fact]
 		public void AutoFarmCacheKeepsEmptySystemsLongerThanNormalSystems() {
 			var now = DateTime.UtcNow;
 			var empty = new AutoFarmSystemSnapshot {

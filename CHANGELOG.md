@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.5.1-beta2
+
+> **Beta release:** This is a focused fix for AutoFarm cargo calculation.
+
+### Fixed
+
+#### AutoFarm
+
+- Fixed valid targets being skipped with an “Insufficient cargo space after adjustment” message when espionage probes contributed cargo capacity.
+
+Build version: **3.5.1.2**
+Release channel: **Beta**
+
 ## v3.5.1-beta1
 
 > **Beta warning:** This release changes the AutoDiscovery dispatch workflow and adds Discord notifications and Auction improvements. It is experimental; edge-case bugs may still remain. Use **v3.4.9** if you need the known functional fallback.

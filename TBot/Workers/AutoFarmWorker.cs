@@ -1478,7 +1478,8 @@ namespace Tbot.Workers {
 										_tbotInstance.UserData.serverData,
 										_tbotInstance.UserData.researches.HyperspaceTechnology,
 										tempCelestial.LFBonuses,
-										_tbotInstance.UserData.userInfo.Class);
+										_tbotInstance.UserData.userInfo.Class,
+										_tbotInstance.UserData.serverData.ProbeCargo);
 									if (actualCargoCapacity < loot.TotalResources) {
 										_tbotInstance.log(LogLevel.Information, LogSender.AutoFarm,
 											$"Insufficient cargo space after the available-fleet adjustment. {actualCargo} {cargoShip} can carry {actualCargoCapacity:N0} but need {loot.TotalResources:N0}.");
@@ -1539,7 +1540,8 @@ namespace Tbot.Workers {
 							}
 							var cargoCapacity = _calculationService.CalcFleetCapacity(
 								attackingShips, _tbotInstance.UserData.serverData, _tbotInstance.UserData.researches.HyperspaceTechnology,
-								fromCelestial.LFBonuses, _tbotInstance.UserData.userInfo.Class);
+								fromCelestial.LFBonuses, _tbotInstance.UserData.userInfo.Class,
+								_tbotInstance.UserData.serverData.ProbeCargo);
 							var totalLoot = target.Report.Loot(_tbotInstance.UserData.userInfo.Class).TotalResources;
 
 							if (cargoCapacity < totalLoot) {
