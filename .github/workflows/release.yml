@@ -19,11 +19,13 @@ jobs:
       run: |
         SNAP_VERSION=`git describe --tags --abbrev=0` || SNAP_VERSION="`git rev-parse --short HEAD`" ; echo "SNAP_VERSION=$SNAP_VERSION" >> $GITHUB_ENV
     - name: Setup .NET
-      uses: actions/setup-dotnet@v1
+      uses: actions/setup-dotnet@v6
       with:
-        dotnet-version: 9.0.x
+        global-json-file: global.json
     - name: Restore dependencies
       run: dotnet restore
+    - name: Run regression tests
+      run: dotnet test TBot.sln -c Release --no-restore
     - name: Setup GO
       uses: actions/setup-go@v2
       with:
