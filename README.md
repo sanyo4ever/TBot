@@ -5,7 +5,7 @@ OGame Bot — sanyo4ever maintenance fork
 
 Our development and releases live on [`main`](https://github.com/sanyo4ever/TBot/tree/main). This fork retains the work and attribution of [0xE232FE/TBot](https://github.com/0xE232FE/TBot), [Cheeeh/TBot](https://github.com/Cheeeh/TBot) and the original TBot contributors. Its backend is our pinned [ogame.mod fork](https://github.com/sanyo4ever/ogame.mod).
 
-See [our development and release guide](docs/FORK.md) for fixing either project, updating the backend and creating a draft prerelease. Our packages use `-sanyo.N` versions and are separate from upstream releases.
+See [our development and release guide](docs/FORK.md) for fixing either project, updating the backend and creating our releases. Versions retain the author's release number and append a letter: `3.4.6a`, `3.4.6b`, then `3.4.7a` after reviewing and adopting that upstream release.
 
 [![GitHub all releases](https://img.shields.io/github/downloads/sanyo4ever/TBot/total)](https://github.com/sanyo4ever/TBot/releases)
 [![Fork CI](https://github.com/sanyo4ever/TBot/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/sanyo4ever/TBot/actions/workflows/build.yml)
@@ -210,7 +210,7 @@ You can change settings from WebUI or editing the files directly.
 ## Running on Linux/MacOS
 * Open a terminal (if you are in a desktop environment)
 * Download latest release for your platform.
-  * Download the matching ZIP from [our Releases page](https://github.com/sanyo4ever/TBot/releases). Fork tags use `sanyo-vVERSION`; package names use `TBot-VERSION-PLATFORM.zip`.
+  * Download the matching ZIP from [our Releases page](https://github.com/sanyo4ever/TBot/releases). A fork tag such as `3.4.6a` has packages named `TBot-3.4.6a-PLATFORM.zip`.
 * Unzip the downloaded file
   * `unzip TBot-VERSION-PLATFORM.zip -d TBot` (*change the filename to your real one!*)
 * Make ogamed executable (*this is only required on first run or update*)
@@ -288,7 +288,7 @@ The regression tests run without an OGame account or a Telegram connection.
 
 The .NET solution does not build the Go backend. To run TBot locally, also build `ogame/cmd/ogamed-tbot` for your platform and place `ogamed.exe` (Windows) or `ogamed` (Linux/macOS) beside the TBot executable. The [workflows](.github/workflows) contain the platform-specific build and packaging commands.
 
-The [fork workflow](.github/workflows/build.yml) uses the SDK policy in `global.json`, runs both regression suites before packaging, and creates a draft prerelease only on manual dispatch from `main`. See [the release guide](docs/FORK.md).
+The [fork workflow](.github/workflows/build.yml) uses the SDK policy in `global.json`, runs regression suites before packaging, and creates a draft release only on manual dispatch from `main`. See [the release guide](docs/FORK.md).
   
 ## Portability
 TBot is currently developed and mantained for Windows 64bit, Windows 32bit, Linux x86_64, MacOS 64bit, MacOS ARM, Linux ARMv7 and Linux ARM64.

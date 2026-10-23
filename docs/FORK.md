@@ -26,14 +26,20 @@ git add ogame
 git commit -m "build: update pinned ogamed backend"
 ```
 
+## Version policy
+
+The public version is the reviewed author release plus a lowercase letter: `3.4.6a`, `3.4.6b`, and so on. `fork-version.json` records the upstream release, its commit, the source branch/commit used by our fork, and our revision letter. Our current source also includes reviewed develop-branch changes; the recorded source commit makes that distinction visible. The CLI rejects a release label that differs from this checked-in policy. .NET package versions use valid SemVer (`3.4.6-a`), while the window title, GitHub tag, package names and informational version display `3.4.6a`; numeric assembly/file versions remain `3.4.6`.
+
+When the author publishes a new release, review its commits and merged PRs first. Decide what to import on an integration branch, run the regression suite, and only then update the recorded upstream version/commit and restart our letter at `a`. Do not update automatically or overwrite our main.
+
 ## Creating our releases
 
 1. Ensure the intended TBot and Go fixes are committed on our `main` and CI is green.
-2. Open [Actions / Fork CI and release](https://github.com/sanyo4ever/TBot/actions/workflows/build.yml), choose **Run workflow**, select **main**, and enter a new version such as `3.4.7-sanyo.1`.
-3. The workflow validates the version/branch, tests both projects, and builds seven self-contained packages. Only after every package succeeds does it atomically create a new tag at the built commit and create a **draft prerelease** tagged `sanyo-v3.4.7-sanyo.1` in our repository. Any existing tag fails rather than being reused or replacing assets. If release creation fails after the tag was reserved, inspect that tag/run before retrying with a new version.
+2. Check that the version policy, application metadata and `docs/releases/VERSION.md` describe the reviewed change. Open [Actions / Fork CI and release](https://github.com/sanyo4ever/TBot/actions/workflows/build.yml), choose **Run workflow**, select **main**, and enter the reviewed version such as `3.4.6a`.
+3. The workflow validates the version/branch, tests both projects, and builds seven self-contained packages. Only after every package succeeds does it atomically create a new tag at the built commit and create a **draft release** tagged `3.4.6a` in our repository. Any existing tag fails rather than being reused or replacing assets. If release creation fails after the tag was reserved, inspect that tag/run before retrying with a new version.
 4. Review the draft's source commit, ZIPs and `SHA256SUMS`. Every package contains `BUILD-INFO.txt` with both source SHAs and toolchain versions. Perform any desired live-account check separately, then publish the draft from [our Releases page](https://github.com/sanyo4ever/TBot/releases).
 
-Ordinary pushes, PRs and upstream tags do not create a release. Release versions use the `-sanyo.N` suffix; .NET assembly/file versions use only the numeric prefix. A draft is intentional: automated tests/builds do not establish that every action works against the current live game. This setup does not install or update any running client.
+Ordinary pushes, PRs and upstream tags do not create a release. A draft allows the owner to verify the artifacts before publishing. Automated tests/builds do not establish that every action works against the current live game. Installing a release locally is a separate explicit step; never copy private settings into a source commit or a public release archive.
 
 ## Upstream updates
 

@@ -304,6 +304,10 @@ paket-files/
 
 # Python Tools for Visual Studio (PTVS)
 __pycache__/
+
+# Release notes are source documentation, not build output
+!docs/releases/
+!docs/releases/*.md
 *.pyc
 
 # Cake - Uncomment if you are using it
@@ -342,3 +346,6 @@ ASALocalRun/
 
 # BeatPulse healthcheck temp database
 healthchecksdb
+
+# Local Python release-tool caches
+__pycache__/

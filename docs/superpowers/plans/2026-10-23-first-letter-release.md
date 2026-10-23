@@ -1,0 +1,11 @@
+# First independent letter release
+
+User explicitly authorizes our fork merges, first release publication and preparing a separate local client beside the running 3.4.6 client. Do not stop the running client, start the new bot, log into a game account or send fleets. Private configuration remains local and must never enter commits, artifacts or release assets.
+
+1. Record official upstream release3.4.6 and tag commit9f788e2, plus our reviewed develop source35b4ce0. Adopt labels3.4.6a/3.4.6b; future upstream changes are reviewed before adopting a new base and resetting the letter. Validate the release policy and display the letter in the console title.
+2. Review PR56+its recovery follow-up, GoPR169/167 and upstreamPR161 against our current main. Import useful missing changes with attribution, preserve stricter checkTarget and already-present fixes, and exclude untested PoW/fingerprint/auth additions. Use isolated clones for independent integration tasks, each with regression tests.
+3. Integrate the C# and Go commits on release/3.4.6a, run combined tests/builds, independently review the final delta, pin the final Go commit, then merge our own PRs into main. Existing upstream PRs remain untouched.
+4. Trigger our release workflow for reviewed3.4.6a. Require tests and all seven packages to succeed; inspect published source provenance/checksums/assets before publishing the draft. Release notes list included/already-present/deferred candidates and verification limits.
+5. Download the exact win64 release asset, verify checksums and extract into D:\TBOT\TBot-3.4.6a-win64\publish\win64. Copy local settings, referenced instance files and profiles with structural/hash checks. Preserve original processes/files; do not copy a live database blindly. Prepare a launcher with the correct working directory and a guard against simultaneous old/new processes. Report the folder/launcher and leave the actual switch to the user.
+
+Verification: Python release-policy tests, C# worker/profile/calculation/title tests, isolated Go protocol/extractor tests, actionlint, full GitHub packaging matrix, artifact manifest/hash inspection, local JSON/reference/binary checks. Live login/fleet behavior is explicitly outside this offline preparation.
