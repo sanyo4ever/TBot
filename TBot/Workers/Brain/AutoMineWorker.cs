@@ -107,9 +107,9 @@ namespace Tbot.Workers.Brain {
 				List<Celestial> celestialsToMine = new();
 				foreach (Celestial celestial in _tbotInstance.UserData.celestials.Where(p => p is Planet)) {
 					var cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.Buildings);
-					cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.LFBuildings);
-					cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.LFBonuses);					
-					Planet abaCelestial = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.Fast) as Planet;
+					cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.LFBuildings);
+					cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.LFBonuses);
+					Planet abaCelestial = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.Fast) as Planet;
 					var nextMine = _calculationService.GetNextMineToBuild(cel as Planet, _tbotInstance.UserData.researches, _tbotInstance.UserData.serverData.Speed, maxBuildings.MetalMine, maxBuildings.CrystalMine, maxBuildings.DeuteriumSynthesizer, 1, _tbotInstance.UserData.userInfo.Class, _tbotInstance.UserData.staff.Geologist, _tbotInstance.UserData.staff.IsFull, true, int.MaxValue);
 					if (nextMine != Buildables.Null) {
 						var lv = _calculationService.GetNextLevel(cel, nextMine);

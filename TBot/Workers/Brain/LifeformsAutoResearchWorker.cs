@@ -84,8 +84,8 @@ namespace Tbot.Workers.Brain {
 
 					foreach (Celestial celestial in _tbotInstance.UserData.celestials.Where(p => p is Planet)) {
 						var cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.LFBuildings);
-						cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.LFTechs);
-						cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.Resources);
+						cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.LFTechs);
+						cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.Resources);
 
 						if (cel.LFtype == LFTypes.None) {
 							DoLog(LogLevel.Information, $"Skipping {cel.ToString()}: No Lifeform active on this planet.");
@@ -102,7 +102,7 @@ namespace Tbot.Workers.Brain {
 							}
 
 							DoLog(LogLevel.Debug, $"Celestial {cel.ToString()}: Next Lifeform Research: {nextLFTechToBuild.ToString()} lv {level.ToString()}.");
-							celestialsToMine.Add(celestial);
+							celestialsToMine.Add(cel);
 						} else {
 							DoLog(LogLevel.Debug, $"Celestial {cel.ToString()}: No Next Lifeform technology to build found. All research reached _tbotInstance.InstanceSettings MaxResearchLevel ?");
 						}

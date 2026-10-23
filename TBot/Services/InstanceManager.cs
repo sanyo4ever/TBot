@@ -35,6 +35,7 @@ namespace Tbot.Services {
 		private readonly ILoggerService<TelegramMessenger> _telegramLogger;
 		private readonly IServiceScopeFactory _scopeFactory;
 		private readonly ICalculationService _helpersService;
+		private readonly Func<Task> _delayBetweenInstanceStarts;
 
 		static ITelegramMessenger telegramMessenger = null;
 		static SemaphoreSlim instancesSem = new SemaphoreSlim(1, 1);
@@ -44,161 +45,170 @@ namespace Tbot.Services {
 			IOgameService ogameService,
 			IServiceScopeFactory serviceScopeFactory,
 			ILoggerService<TelegramMessenger> telegramLogger,
-			ICalculationService helpersService) {
+			ICalculationService helpersService)
+			: this(logger, ogameService, serviceScopeFactory, telegramLogger, helpersService,
+				() => Task.Delay(Random.Shared.Next(30, 60) * 1000)) {
+		}
+
+		public InstanceManager(ILoggerService<InstanceManager> logger,
+			IOgameService ogameService,
+			IServiceScopeFactory serviceScopeFactory,
+			ILoggerService<TelegramMessenger> telegramLogger,
+			ICalculationService helpersService,
+			Func<Task> delayBetweenInstanceStarts) {
 			_logger = logger;
 			_ogameService = ogameService;
 			_scopeFactory = serviceScopeFactory;
 			_telegramLogger = telegramLogger;
 			_helpersService = helpersService;
+			_delayBetweenInstanceStarts = delayBetweenInstanceStarts;
 		}
 
 		public async void OnSettingsChanged() {
 			await instancesSem.WaitAsync();
+			try {
+				_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Reading settings \"{SettingsAbsoluteFilepath}\"");
 
-			_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Reading settings \"{SettingsAbsoluteFilepath}\"");
+				// Read settings first
+				_mainSettings = await SettingsService.GetSettings(SettingsAbsoluteFilepath);
 
-			// Read settings first
-			_mainSettings = await SettingsService.GetSettings(SettingsAbsoluteFilepath);
+				// Initialize TelegramMessenger if enabled on main settings
+				await InitializeTelegramMessenger();
 
-			// Initialize TelegramMessenger if enabled on main settings
-			await InitializeTelegramMessenger();
+				// Detect settings versioning by checking existence of "Instances" key
+				SettingsVersion settingVersion = SettingsVersion.Invalid;
 
-			// Detect settings versioning by checking existence of "Instances" key
-			SettingsVersion settingVersion = SettingsVersion.Invalid;
+				List<TbotInstanceData> newInstances = new();				// Instances which settings were already present
+				// We are going to gather valid Instances to be inited. The execution will be like this:
+				//	Await deinit of any removed instances
+				//	Async init of good instances
+				List<Task<TbotInstanceData>> awaitingInstances = new();		// Instances to be awaited
+				List<InitInstanceData> instancesToBeInited = new();     // Key -> Alias, Value -> settings
 
-			List<TbotInstanceData> newInstances = new();				// Instances which settings were already present
-			// We are going to gather valid Instances to be inited. The execution will be like this:
-			//	Await deinit of any removed instances
-			//	Async init of good instances
-			List<Task<TbotInstanceData>> awaitingInstances = new();		// Instances to be awaited
-			List<Task> deinitingInstances = new();
-			List<InitInstanceData> instancesToBeInited = new();     // Key -> Alias, Value -> settings
+				if (SettingsService.IsSettingSet(_mainSettings, "Instances") == false) {
+					_logger.WriteLog(LogLevel.Information, LogSender.Main, "Single instance settings detected");
+					settingVersion = SettingsVersion.AllInOne;
 
-			if (SettingsService.IsSettingSet(_mainSettings, "Instances") == false) {
-				_logger.WriteLog(LogLevel.Information, LogSender.Main, "Single instance settings detected");
-				settingVersion = SettingsVersion.AllInOne;
-
-				// Check if FilePath is one of the already inited instances
-				if (instances.Any(c => c._botSettingsPath == SettingsAbsoluteFilepath) == true) {
-					var foundInstance = instances.First(c => c._botSettingsPath == SettingsAbsoluteFilepath);
-
-					newInstances.Add(foundInstance);
-				} else {
-					// Start only an instance of TBot
-					instancesToBeInited.Add(new InitInstanceData("MAIN", SettingsAbsoluteFilepath));
-				}
-			} else {
-				// In this case we need a json formatted like follows:
-				//	"Instances": [
-				//		{
-				//			"Settings": "<relative to main settings path>",
-				//			"Alias": "<Custom name for this instance>"
-				//		}
-				// ]
-				_logger.WriteLog(LogLevel.Information, LogSender.Main, "Multiples instances settings detected");
-				settingVersion = SettingsVersion.MultipleInstances;
-
-				// Initialize all the instances of TBot found in main settings
-				ICollection json_instances = _mainSettings.Instances;
-				List<InitInstanceData> uniqueInstances = new();
-
-				// Extract unique values
-				foreach (var instance in _mainSettings.Instances) {
-					string cInstanceSettingPath = new DirectoryInfo(Path.Combine(Path.GetDirectoryName(SettingsAbsoluteFilepath), instance.Settings)).FullName;
-					string alias = instance.Alias;
-
-					if(uniqueInstances.Any(c => c.SettingsPath == cInstanceSettingPath) == false) {
-						uniqueInstances.Add(new InitInstanceData(alias, cInstanceSettingPath));
-					}
-				}
-
-				_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Read {json_instances.Count} instances. Unique instaces #{uniqueInstances.Count}");
-
-				// Check if they are already inited or must be inited
-				foreach (var instance in uniqueInstances) {
-					string cInstanceSettingPath = instance.SettingsPath;
-					string alias = instance.Alias;
-
-					// Check if already initialized. if that so, update alias and keep going
-					if (instances.Any(c => c._botSettingsPath == cInstanceSettingPath) == true) {
-						_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Instance \"{alias}\" \"{cInstanceSettingPath}\" already inited.");
-						var foundInstance = instances.First(c => c._botSettingsPath == cInstanceSettingPath);
-						foundInstance._alias = alias;
+					// Check if FilePath is one of the already inited instances
+					if (instances.Any(c => c.IsInitialized && c._botSettingsPath == SettingsAbsoluteFilepath) == true) {
+						var foundInstance = instances.First(c => c.IsInitialized && c._botSettingsPath == SettingsAbsoluteFilepath);
 
 						newInstances.Add(foundInstance);
 					} else {
-						_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Enqueueing initialization of instance \"{alias}\" \"{cInstanceSettingPath}\"");
-						instancesToBeInited.Add(instance);
+						// Start only an instance of TBot
+						instancesToBeInited.Add(new InitInstanceData("MAIN", SettingsAbsoluteFilepath));
+					}
+				} else {
+					// In this case we need a json formatted like follows:
+					//	"Instances": [
+					//		{
+					//			"Settings": "<relative to main settings path>",
+					//			"Alias": "<Custom name for this instance>"
+					//		}
+					// ]
+					_logger.WriteLog(LogLevel.Information, LogSender.Main, "Multiples instances settings detected");
+					settingVersion = SettingsVersion.MultipleInstances;
+
+					// Initialize all the instances of TBot found in main settings
+					ICollection json_instances = _mainSettings.Instances;
+					List<InitInstanceData> uniqueInstances = new();
+
+					// Extract unique values
+					foreach (var instance in _mainSettings.Instances) {
+						string cInstanceSettingPath = new DirectoryInfo(Path.Combine(Path.GetDirectoryName(SettingsAbsoluteFilepath), instance.Settings)).FullName;
+						string alias = instance.Alias;
+
+						if(uniqueInstances.Any(c => c.SettingsPath == cInstanceSettingPath) == false) {
+							uniqueInstances.Add(new InitInstanceData(alias, cInstanceSettingPath));
+						}
+					}
+
+					_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Read {json_instances.Count} instances. Unique instaces #{uniqueInstances.Count}");
+
+					// Check if they are already inited or must be inited
+					foreach (var instance in uniqueInstances) {
+						string cInstanceSettingPath = instance.SettingsPath;
+						string alias = instance.Alias;
+
+						// Check if already initialized. if that so, update alias and keep going
+						if (instances.Any(c => c.IsInitialized && c._botSettingsPath == cInstanceSettingPath) == true) {
+							_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Instance \"{alias}\" \"{cInstanceSettingPath}\" already inited.");
+							var foundInstance = instances.First(c => c.IsInitialized && c._botSettingsPath == cInstanceSettingPath);
+							foundInstance._alias = alias;
+
+							newInstances.Add(foundInstance);
+						} else {
+							_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Enqueueing initialization of instance \"{alias}\" \"{cInstanceSettingPath}\"");
+							instancesToBeInited.Add(instance);
+						}
 					}
 				}
-			}
 
-			// Deinitialize instances that are no more valid (not present in newInstances)
-			foreach (var deInstance in instances) {
-				if (newInstances.Any(c => string.Compare(c._botSettingsPath, deInstance._botSettingsPath) == 0) == false) {
-					_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Deinitializing instance \"{deInstance._alias}\" \"{deInstance._botSettingsPath}\"");
+				// Deinitialize instances that are no more valid (not present in newInstances)
+				var instancesToRemove = instances.Where(deInstance =>
+					!newInstances.Any(c => string.Compare(c._botSettingsPath, deInstance._botSettingsPath) == 0)).ToList();
+				await DeinitializeInstances(instancesToRemove);
 
-					deinitingInstances.Add(deInstance._botMain.DisposeAsync().AsTask());
-				}
-			}
-			await Task.WhenAll(deinitingInstances);
-
-			// Now Async initialize "validated" instances
-			foreach (var instanceToBeInited in instancesToBeInited) {
-				string cInstanceSettingPath = instanceToBeInited.SettingsPath;
-				string alias = instanceToBeInited.Alias;
-				_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Asynchronously initializing instance \"{alias}\" \"{cInstanceSettingPath}\"");
-				awaitingInstances.Add(StartTBotMain(cInstanceSettingPath, alias));
-				//Generate random sleeptime
-				Random waitTime = new Random();
-				int millisecondsTimeout	 = waitTime.Next(30, 60) * 1000;
-				//Put the thread to sleep
-				System.Threading.Thread.Sleep(millisecondsTimeout);
-			}
-
-			// Await initialization and add initialized instances
-			foreach (Task<TbotInstanceData> awaitingInstance in awaitingInstances) {
+				// Now Async initialize "validated" instances
 				try {
-					TbotInstanceData uniqueInstance = await awaitingInstance;
-					if (uniqueInstance != null) {
-						newInstances.Add(uniqueInstance);
+					foreach (var instanceToBeInited in instancesToBeInited) {
+						string cInstanceSettingPath = instanceToBeInited.SettingsPath;
+						string alias = instanceToBeInited.Alias;
+						_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Asynchronously initializing instance \"{alias}\" \"{cInstanceSettingPath}\"");
+						awaitingInstances.Add(StartTBotMain(cInstanceSettingPath, alias));
+						await _delayBetweenInstanceStarts();
 					}
-				} catch (MissingConfigurationException ) {
-					// If settings is set as to throw if an instance fails, then do it
-					// For now, let's keep old behaviour
-					continue;
-				} catch (AccountInVacationModeException) {
-					// If settings is set as to throw if an instance fails, then do it
-					// For now, let's keep old behaviour
-					continue;
-				} catch (UnableToLoginException) {
-					// If settings is set as to throw if an instance fails, then do it
-					// For now, let's keep old behaviour
-					continue;
+				} finally {
+					// Every started task must transfer ownership, even if another
+					// startup or the stagger delay fails.
+					foreach (Task<TbotInstanceData> awaitingInstance in awaitingInstances) {
+						try {
+							TbotInstanceData uniqueInstance = await awaitingInstance;
+							if (uniqueInstance != null)
+								instances.Add(uniqueInstance);
+						} catch (Exception) {
+							// StartTBotMain already logged the failure and disposed
+							// its scope. Continue observing the remaining results.
+							continue;
+						}
+					}
 				}
+
+				_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Instances stats: Initialized {instances.Count(instance => instance.IsInitialized)} - Deinitialized {instancesToRemove.Count}");
+
+				// Initialize settingsWatcher
+				if (settingsWatcher == null)
+					settingsWatcher = new SettingsFileWatcher(OnSettingsChanged, SettingsAbsoluteFilepath);
+
+			} catch (Exception exception) {
+				_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Error reloading settings: {exception.Message}");
+			} finally {
+				instancesSem.Release();
 			}
-
-			// Finally, swap lists
-			instances.Clear();
-			instances = newInstances.ToList();
-
-			_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Instances stats: Initialized {instances.Count} - Deinitialized {deinitingInstances.Count}");
-
-			// Initialize settingsWatcher 
-			if (settingsWatcher == null)
-				settingsWatcher = new SettingsFileWatcher(OnSettingsChanged, SettingsAbsoluteFilepath);
-
-			instancesSem.Release();
 		}
 
 		public async ValueTask DisposeAsync() {
-			List<Task> deinitTasks = new();
-			foreach (var instance in instances) {
-				_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Deinitializing instance \"{instance._alias}\" \"{instance._botSettingsPath}\"");
-				deinitTasks.Add(instance.Deinitialize());
+			await instancesSem.WaitAsync();
+			try {
+				await DeinitializeInstances(instances.ToList());
+			} finally {
+				instancesSem.Release();
 			}
-			await Task.WhenAll(deinitTasks);
-			instances.Clear();
+		}
+
+		private async Task DeinitializeInstances(IEnumerable<TbotInstanceData> selectedInstances) {
+			List<Exception> failures = new();
+			foreach (var instance in selectedInstances) {
+				try {
+					_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Deinitializing instance \"{instance._alias}\" \"{instance._botSettingsPath}\"");
+					await instance.Deinitialize();
+					instances.Remove(instance);
+				} catch (Exception exception) {
+					failures.Add(exception);
+				}
+			}
+			if (failures.Count > 0)
+				throw new AggregateException("One or more instances could not be deinitialized.", failures);
 		}
 
 		private async Task InitializeTelegramMessenger() {
@@ -248,6 +258,7 @@ namespace Tbot.Services {
 		private async Task<TbotInstanceData> StartTBotMain(string settingsPath, string alias) {
 			_logger.WriteLog(LogLevel.Information, LogSender.Main, $"Initializing instance \"{alias}\" \"{settingsPath}\"");
 
+			TbotInstanceData ownedInstance = null;
 			try {
 				if (File.Exists(settingsPath) == false) {
 					_logger.WriteLog(LogLevel.Warning, LogSender.Main, $"Instance \"{alias}\" cannot be initialized. \"{settingsPath}\" does not exist");
@@ -255,7 +266,9 @@ namespace Tbot.Services {
 				} else {
 
 					var scope = _scopeFactory.CreateScope();
+					ownedInstance = new TbotInstanceData(null, scope, settingsPath, alias) { IsInitialized = false };
 					var tBotInstance = scope.ServiceProvider.GetRequiredService<ITBotMain>();
+					ownedInstance._botMain = tBotInstance;
 
 					await tBotInstance.Init(settingsPath, alias, telegramMessenger);	// This may throw
 
@@ -263,29 +276,36 @@ namespace Tbot.Services {
 					// Add a OnError callback so we can remove it from our list if an error occurred
 					tBotInstance.OnError += TBotInstance_OnError;
 
-					var instance = new TbotInstanceData(tBotInstance, scope, settingsPath, alias);
-					return instance;
+					ownedInstance.IsInitialized = true;
+					return ownedInstance;
 				}
 			} catch (Exception e) {
 				_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Error initializing instance \"{alias}\": {e.Message}");
+				if (ownedInstance != null) {
+					try {
+						await ownedInstance.Deinitialize();
+					} catch (Exception cleanupException) {
+						_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Error cleaning up instance \"{alias}\": {cleanupException.Message}. Ownership retained; a replacement is blocked.");
+						return ownedInstance;
+					}
+				}
 				throw;
 			}
 		}
 
 		private async void TBotInstance_OnError(object sender, EventArgs e) {
-			ITBotMain tbotInstance = (ITBotMain) sender;
-			var alias = tbotInstance.InstanceAlias;
-			_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Error on tboInstance instance \"{alias}\"");
+			await instancesSem.WaitAsync();
 			try {
-				TbotInstanceData fInstance = instances.First(c => c._botMain.InstanceAlias == alias);
-				ITBotMain tbotToDispose = fInstance._botMain;
-
-				_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Removing TBot instance \"{alias}\"");
-
+				TbotInstanceData fInstance = instances.FirstOrDefault(c => ReferenceEquals(c._botMain, sender));
+				if (fInstance == null)
+					return;
+				_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Removing TBot instance \"{fInstance._alias}\"");
+				await fInstance.Deinitialize();
 				instances.Remove(fInstance);
-				await tbotToDispose.DisposeAsync();
-			} catch(InvalidOperationException) {
-				// OK!
+			} catch (Exception exception) {
+				_logger.WriteLog(LogLevel.Error, LogSender.Main, $"Error removing TBot instance: {exception.Message}");
+			} finally {
+				instancesSem.Release();
 			}
 		}
 	}
