@@ -63,7 +63,7 @@ namespace TBot.Ogame.Infrastructure {
 
 			_ogamedProcess = ExecuteOgamedExecutable(credentials, device, host, port, captchaKey, proxySettings);
 
-			_client = new HttpClient() {
+			_client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) {
 				BaseAddress = new Uri($"http://{host}:{port}/"),
 				Timeout = TimeSpan.FromSeconds(60)
 			};
@@ -301,6 +301,17 @@ namespace TBot.Ogame.Infrastructure {
 					return response;
 				});
 			return await ManageResponse<T>(response);
+		}
+
+		private async Task<T> PostAsyncNoRetry<T>(string resource, params KeyValuePair<string, string>[] parameters) {
+			// An action may have reached the game even when its response was lost.
+			using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(resource, UriKind.Relative)) {
+				Content = new FormUrlEncodedContent(parameters)
+			};
+			using var response = await _client.SendAsync(request);
+			var result = await ManageResponse<T>(response);
+			response.EnsureSuccessStatusCode();
+			return result;
 		}
 
 		public async Task SetUserAgent(string userAgent) {
@@ -1038,12 +1049,9 @@ namespace TBot.Ogame.Infrastructure {
 				parameters.Add(new KeyValuePair<string, string>("galaxy", coords.Galaxy.ToString()));
 				parameters.Add(new KeyValuePair<string, string>("system", coords.System.ToString()));
 				parameters.Add(new KeyValuePair<string, string>("position", coords.Position.ToString()));
-				success = await PostAsync<bool>($"/bot/planets/{origin.ID}/send-discovery", parameters.ToArray());
-			} catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.BadRequest) {
-				success = false;
-			} catch (OgamedException e) {
-				success = false;
+				success = await PostAsyncNoRetry<bool>($"/bot/planets/{origin.ID}/send-discovery", parameters.ToArray());
 			} catch (Exception e) {
+				_logger.WriteLog(LogLevel.Warning, LogSender.OGameD, $"Discovery request failed: {e.Message}");
 				success = false;
 			}
 			return success;

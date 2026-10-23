@@ -5,7 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>disable</Nullable>
     <Authors>TBot</Authors>
-    <Version>3.4.6-a</Version>
+    <Version>3.4.6-b</Version>
     <StartupObject>Tbot.Program</StartupObject>
     <Platforms>AnyCPU;x64;x86</Platforms>
     <Copyright>2026 © TBot</Copyright>
@@ -14,7 +14,7 @@
     <RepositoryUrl>https://github.com/sanyo4ever/TBot</RepositoryUrl>
     <AssemblyVersion>3.4.6</AssemblyVersion>
     <FileVersion>3.4.6</FileVersion>
-    <InformationalVersion>3.4.6a</InformationalVersion>
+    <InformationalVersion>3.4.6b</InformationalVersion>
     <Description>OGame Bot</Description>
     <SignAssembly>False</SignAssembly>
     <AssemblyOriginatorKeyFile>ELK-Lab.pfx</AssemblyOriginatorKeyFile>

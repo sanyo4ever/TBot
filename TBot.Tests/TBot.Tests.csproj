@@ -16,6 +16,8 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <ProjectReference Include="..\TBot\TBot.csproj" />
+    <ProjectReference Include="OfflineShutdownHarness\OfflineShutdownHarness.csproj" Aliases="shutdownharness" />
+    <Compile Remove="OfflineShutdownHarness\**\*.cs" />
     <None Include="..\fork-version.json" Link="fork-version.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\TBot\instance_settings.json" Link="instance_settings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

@@ -91,8 +91,8 @@ namespace Tbot.Workers.Brain {
 			foreach (var p in _tbotInstance.UserData.celestials) {
 				if (p.Coordinate.Type == Celestials.Planet) {
 					var newPlanet = await _tbotOgameBridge.UpdatePlanet(p, UpdateTypes.Facilities);
-					newPlanet = await _tbotOgameBridge.UpdatePlanet(p, UpdateTypes.Buildings);
-					newPlanet = await _tbotOgameBridge.UpdatePlanet(p, UpdateTypes.LFBonuses);
+					newPlanet = await _tbotOgameBridge.UpdatePlanet(newPlanet, UpdateTypes.Buildings);
+					newPlanet = await _tbotOgameBridge.UpdatePlanet(newPlanet, UpdateTypes.LFBonuses);
 					planets.Add(newPlanet);
 				}
 			}
@@ -353,7 +353,7 @@ namespace Tbot.Workers.Brain {
 												
 												foreach (var item in resultOrigins) {
 													ships = new();
-													ships.Add((Buildables) transportsSettings.CargoType, _calculationService.CalcShipNumberForPayload(item.FirstOrDefault().Value, (Buildables) transportsSettings.CargoType, _tbotInstance.UserData.researches.HyperspaceTechnology, _tbotInstance.UserData.serverData, celestial.LFBonuses.GetShipCargoBonus(transportsSettings.CargoType), _tbotInstance.UserData.userInfo.Class, _tbotInstance.UserData.serverData.ProbeCargo));
+													ships.Add((Buildables) transportsSettings.CargoType, _calculationService.CalcShipNumberForPayload(item.FirstOrDefault().Value, (Buildables) transportsSettings.CargoType, _tbotInstance.UserData.researches.HyperspaceTechnology, _tbotInstance.UserData.serverData, item.FirstOrDefault().Key.LFBonuses.GetShipCargoBonus(transportsSettings.CargoType), _tbotInstance.UserData.userInfo.Class, _tbotInstance.UserData.serverData.ProbeCargo));
 													if (item.FirstOrDefault().Key.Coordinate.IsSame(destination.Coordinate) && transportsSettings.SendToTheMoonIfPossible && destination.Coordinate.Type == Celestials.Moon)
 														fleetId= await _fleetScheduler.SendFleet(item.FirstOrDefault().Key, ships, celestial.Coordinate, Missions.Transport, Speeds.HundredPercent, item.FirstOrDefault().Value);
 													else

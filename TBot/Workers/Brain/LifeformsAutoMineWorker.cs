@@ -72,8 +72,8 @@ namespace Tbot.Workers.Brain {
 
 					List<Celestial> celestialsToExclude = _calculationService.ParseCelestialsList(_tbotInstance.InstanceSettings.Brain.LifeformAutoMine.Exclude, _tbotInstance.UserData.celestials);
 					List<Celestial> celestialsToMine = new();
-					LFBuildings maxLFBuildings = new();
 					foreach (Celestial celestial in _tbotInstance.UserData.celestials.Where(p => p is Planet)) {
+						LFBuildings maxLFBuildings = new();
 						var cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.Buildings);
 
 						if ((int) _tbotInstance.InstanceSettings.Brain.LifeformAutoMine.StartFromCrystalMineLvl > (int) cel.Buildings.CrystalMine) {
@@ -85,9 +85,9 @@ namespace Tbot.Workers.Brain {
 						int maxFoodFactory = (int) _tbotInstance.InstanceSettings.Brain.LifeformAutoMine.MaxBaseFoodBuilding;
 						bool preventIfMoreExpensiveThanNextMine = (bool) _tbotInstance.InstanceSettings.Brain.LifeformAutoMine.PreventIfMoreExpensiveThanNextMine;
 
-						cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.LFBuildings);
-						cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.Resources);
-						cel = await _tbotOgameBridge.UpdatePlanet(celestial, UpdateTypes.ResourcesProduction);
+						cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.LFBuildings);
+						cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.Resources);
+						cel = await _tbotOgameBridge.UpdatePlanet(cel, UpdateTypes.ResourcesProduction);
 						switch (cel.LFtype) {
 							case LFTypes.Humans:
 								maxLFBuildings.ResidentialSector = (int) _tbotInstance.InstanceSettings.Brain.LifeformAutoMine.MaxBasePopulationBuilding;
@@ -153,7 +153,7 @@ namespace Tbot.Workers.Brain {
 							var lv = _calculationService.GetNextLevel(celestial, nextLFBuilding);
 							DoLog(LogLevel.Debug, $"Celestial {cel.ToString()}: Next Lifeform building: {nextLFBuilding.ToString()} lv {lv.ToString()}.");
 
-							celestialsToMine.Add(celestial);
+							celestialsToMine.Add(cel);
 						} else {
 							DoLog(LogLevel.Debug, $"Celestial {cel.ToString()}: No Next Lifeform building to build found.");
 						}
