@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Fork prerelease version, for example 3.4.7-sanyo.1'
+        description: 'Reviewed author release plus letter, for example 3.4.6a'
         required: true
         type: string
 
@@ -23,9 +23,14 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
+      label: ${{ steps.version.outputs.label }}
       version: ${{ steps.version.outputs.version }}
       assembly: ${{ steps.version.outputs.assembly }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
+      - uses: actions/checkout@v7
+      - name: Test release version policy
+        run: python3 -m unittest discover -s tools/tests -v
       - name: Validate version and release branch
         id: version
         env:
@@ -37,16 +42,10 @@ jobs:
               echo '::error::Release builds must run from main.'
               exit 1
             fi
-            if [[ ! "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-sanyo\.[0-9]+$ ]]; then
-              echo '::error::Use a fork version such as 3.4.7-sanyo.1.'
-              exit 1
-            fi
-            version="$REQUESTED_VERSION"
+            python3 tools/release_version.py --requested "$REQUESTED_VERSION" --github-output "$GITHUB_OUTPUT"
           else
-            version="3.4.7-sanyo.0-ci.${GITHUB_RUN_NUMBER}"
+            python3 tools/release_version.py --ci-run "$GITHUB_RUN_NUMBER" --github-output "$GITHUB_OUTPUT"
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "assembly=${version%%-*}" >> "$GITHUB_OUTPUT"
 
   test:
     needs: version
@@ -87,7 +86,8 @@ jobs:
           - {platform: osx64, rid: osx-x64, goos: darwin, goarch: amd64, goarm: '', backend: ogamed}
           - {platform: osx-arm64, rid: osx-arm64, goos: darwin, goarch: arm64, goarm: '', backend: ogamed}
     env:
-      VERSION: ${{ needs.version.outputs.version }}
+      VERSION: ${{ needs.version.outputs.label }}
+      PACKAGE_VERSION: ${{ needs.version.outputs.version }}
       ASSEMBLY_VERSION: ${{ needs.version.outputs.assembly }}
       PLATFORM: ${{ matrix.platform }}
       RID: ${{ matrix.rid }}
@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           dotnet publish TBot -c Release -r "$RID" -o "publish/$PLATFORM" \
-            -p:Version="$VERSION" -p:AssemblyVersion="$ASSEMBLY_VERSION" \
+            -p:Version="$PACKAGE_VERSION" -p:AssemblyVersion="$ASSEMBLY_VERSION" \
             -p:FileVersion="$ASSEMBLY_VERSION" -p:InformationalVersion="$VERSION" \
             -p:PublishSingleFile=true --self-contained true
       - name: Build pinned ogamed-tbot
@@ -124,6 +124,7 @@ jobs:
         run: |
           cp README.md "publish/$PLATFORM/"
           cp ogame/LICENSE "publish/$PLATFORM/OGAME-LICENSE"
+          cp fork-version.json "publish/$PLATFORM/"
           {
             echo "Version: $VERSION"
             echo "Repository: $GITHUB_REPOSITORY"
@@ -152,9 +153,13 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: ${{ needs.version.outputs.version }}
+      VERSION: ${{ needs.version.outputs.label }}
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           pattern: TBot-*
@@ -166,19 +171,15 @@ jobs:
           packages=(dist/TBot-*.zip)
           [[ ${#packages[@]} -eq 7 ]] || { echo '::error::Expected seven release packages.'; exit 1; }
           (cd dist && sha256sum TBot-*.zip > SHA256SUMS)
-          cat > release-notes.md <<EOF
-          Independent sanyo4ever maintenance fork of TBot.
-
-          Source: https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA
-          Each package includes BUILD-INFO.txt with the exact TBot and Go commits.
-          These automated builds do not constitute a live-account fleet-send test.
-          EOF
+          cp "docs/releases/$VERSION.md" release-notes.md
+          echo "" >> release-notes.md
+          echo "Source: https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA" >> release-notes.md
       - name: Create fork draft prerelease
         shell: bash
         run: |
           # Atomically reserve a new tag at the built commit; existing tags fail.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f "ref=refs/tags/sanyo-v$VERSION" -f "sha=$GITHUB_SHA"
-          gh release create "sanyo-v$VERSION" dist/TBot-*.zip dist/SHA256SUMS \
+            -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA"
+          gh release create "$RELEASE_TAG" dist/TBot-*.zip dist/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "TBot $VERSION" --notes-file release-notes.md --draft --prerelease
+            --title "TBot $VERSION" --notes-file release-notes.md --draft
