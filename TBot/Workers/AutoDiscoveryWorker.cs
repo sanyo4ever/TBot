@@ -41,15 +41,10 @@ namespace Tbot.Workers {
 			var rand = new Random();
 			try {
 				DoLog(LogLevel.Information, $"Starting AutoDiscovery...");
-				if (_tbotInstance.UserData.discoveryBlackList == null) {
-					_tbotInstance.UserData.discoveryBlackList = new Dictionary<Coordinate, DateTime>();
-				} else {
-					if (_tbotInstance.UserData.discoveryBlackList.First().Value < DateTime.Now || _tbotInstance.UserData.discoveryBlackList.Last().Value < DateTime.Now) {
-						foreach(var (blacklistedCoord, blacklistedTime) in _tbotInstance.UserData.discoveryBlackList.ToList()) {
-							if (blacklistedTime < DateTime.Now)
-								_tbotInstance.UserData.discoveryBlackList.Remove(blacklistedCoord);
-						}
-					}
+				_tbotInstance.UserData.discoveryBlackList ??= new Dictionary<Coordinate, DateTime>();
+				foreach (var (blacklistedCoord, blacklistedTime) in _tbotInstance.UserData.discoveryBlackList.ToList()) {
+					if (blacklistedTime < DateTime.Now)
+						_tbotInstance.UserData.discoveryBlackList.Remove(blacklistedCoord);
 				}
 				if (!_tbotInstance.UserData.isSleeping) {
 					if ((bool) _tbotInstance.InstanceSettings.SleepMode.Active) {
@@ -210,7 +205,9 @@ namespace Tbot.Workers {
 										.ToDictionary(c => c.Key, c => c.Value);*/
 					}
 
-					while (discoveries > 0 && !stop && fleetsToSend > 0 && _tbotInstance.UserData.slots.Free > (int) _tbotInstance.InstanceSettings.General.SlotsToLeaveFree) {
+					// Bound attempts even when random candidates are all blacklisted or sends fail.
+					int attemptsRemaining = 600;
+					while (discoveries > 0 && !stop && fleetsToSend > 0 && _tbotInstance.UserData.slots.Free > (int) _tbotInstance.InstanceSettings.General.SlotsToLeaveFree && attemptsRemaining-- > 0) {
 						Dictionary<Celestial, Coordinate> dest = new();
 						if ((bool) _tbotInstance.InstanceSettings.AutoDiscovery.RandomizeDestination) {
 							int randomIndex = Random.Shared.Next(0, origins.Count);
@@ -219,6 +216,8 @@ namespace Tbot.Workers {
 								new Coordinate { Galaxy = origins[randomIndex].Coordinate.Galaxy, System = Random.Shared.Next(1, _tbotInstance.UserData.serverData.Systems + 1), Position = Random.Shared.Next(1, 16) }
 							);
 						} else {
+							if (destinationCoord.Count == 0)
+								break;
 							dest.Add(destinationCoord.Values.First(), destinationCoord.Keys.First());
 							destinationCoord.Remove(destinationCoord.Keys.First());
 						}
@@ -254,7 +253,12 @@ namespace Tbot.Workers {
 						DoLog(LogLevel.Information, $"{skips} positions skipped (blacklisted)");
 
 					_tbotInstance.UserData.fleets = await _fleetScheduler.UpdateFleets();
-					long interval = (_tbotInstance.UserData.fleets.Where(f => f.Mission == Missions.Discovery).OrderByDescending(f => f.BackIn).ToList().First().BackIn * 1000 ?? 0) + RandomizeHelper.CalcRandomInterval(IntervalType.SomeSeconds);
+					var nextDiscovery = _tbotInstance.UserData.fleets.Where(f => f.Mission == Missions.Discovery).OrderByDescending(f => f.BackIn).FirstOrDefault();
+					if (nextDiscovery == null) {
+						delay = true;
+						return;
+					}
+					long interval = (nextDiscovery.BackIn * 1000 ?? 0) + RandomizeHelper.CalcRandomInterval(IntervalType.SomeSeconds);
 					DateTime time = await _tbotOgameBridge.GetDateTime();
 					if (interval < 0)
 						interval = RandomizeHelper.CalcRandomInterval(IntervalType.SomeSeconds);
