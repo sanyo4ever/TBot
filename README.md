@@ -1,6 +1,13 @@
 ![TBot - OGame bot](https://ogame-tbot.net/logo-claim.jpg "TBot - OGame bot")
 
-# TBot
+# Legacy TBot fork — release downloads retired
+
+Current development and releases have moved to [sanyo4ever/TBot-Ronnie](https://github.com/sanyo4ever/TBot-Ronnie), a direct fork of [ronnie32/TBot](https://github.com/ronnie32/TBot). Start with [the new releases page](https://github.com/sanyo4ever/TBot-Ronnie/releases). The first maintenance version on Ronnie's `v3.5.1-beta2` is `3.5.1-beta2a`, which remains a prerelease.
+
+This repository preserves our earlier 3.4.6-based source history. Its `3.4.6a` and `3.4.6b` release downloads are retired; historical source tags remain for traceability. The documentation below describes this legacy line and is not the setup guide for current releases.
+
+## Historical project documentation
+
 OGame Bot — sanyo4ever maintenance fork
 
 Our development and releases live on [`main`](https://github.com/sanyo4ever/TBot/tree/main). This fork retains the work and attribution of [0xE232FE/TBot](https://github.com/0xE232FE/TBot), [Cheeeh/TBot](https://github.com/Cheeeh/TBot) and the original TBot contributors. Its backend is our pinned [ogame.mod fork](https://github.com/sanyo4ever/ogame.mod).
