@@ -67,7 +67,7 @@ public class DefenderColonizePreservationTests {
     }
 
     [Fact]
-    public async Task Distant_attack_is_scheduled_and_an_earlier_attack_supersedes_it() {
+    public void Distant_attack_is_scheduled_and_an_earlier_attack_supersedes_it() {
         var settings = SettingsService.GetMergedSettingsFromContents("{}", new List<string> { "{}" });
         var planet = BrainDataFixture.Planet(91002, 5);
         var data = new UserData { celestials = new() { planet }, fleets = new() };
